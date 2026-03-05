@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>生活型態醫學整合平台 - 雲端/本機雙軌版</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .editable-area { transition: all 0.2s; outline: none; min-height: 1.5rem; }
+    .editable-area:hover { background-color: #f8fafc; box-shadow: 0 0 0 1px #cbd5e1; border-radius: 0.25rem; }
+    .editable-area:focus { background-color: #fff; box-shadow: 0 0 0 2px #3b82f6; border-radius: 0.25rem; }
+    select.custom-select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+      background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; padding-right: 2.5rem;
+    }
+    .fade-in { animation: fadeIn 0.3s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    #loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.9); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; font-weight: bold; color: #2563eb; }
+  </style>
+</head>
+<body class="bg-slate-50 font-sans text-slate-800 flex flex-col min-h-screen">
+
+  <div id="loading-overlay">
+      <i data-lucide="loader-2" class="w-8 h-8 animate-spin mb-4"></i>
+      <div id="loading-text" class="text-lg">正在連線至 Firebase 雲端資料庫...</div>
+      <div class="text-sm text-slate-500 mt-2 font-normal">若連線逾時，將自動切換為本機模式</div>
+  </div>
+  <div id="app" class="flex flex-col min-h-screen hidden"></div>
+
+  <!-- 引入 Firebase 核心與服務 -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // 1. 全域常數與對照表
+    const ROLES = [
+      { id: 'CaseManager', name: '個管師', icon: 'users', color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-500' },
+      { id: 'Coach', name: '運動教練', icon: 'activity', color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-500' },
+      { id: 'Nutritionist', name: '營養師', icon: 'utensils', color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-500' },
+      { id: 'SocialWorker', name: '社工師', icon: 'heart-handshake', color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-500' },
+      { id: 'Psychologist', name: '心理師', icon: 'brain', color: 'text-pink-600', bg: 'bg-pink-50', border: 'border-pink-500' },
+    ];
+    const MEAL_TIMES = ["早餐", "早點", "午餐", "午點", "晚餐", "晚點"];
+    const FOOD_CATEGORIES = [{ id: 'milk_full', label: '奶類-全脂' }, { id: 'milk_low', label: '奶類-低脂' }, { id: 'milk_none', label: '奶類-脫脂' }, { id: 'grain', label: '主食類' }, { id: 'meat_low', label: '肉類-低脂' }, { id: 'meat_med', label: '肉類-中脂' }, { id: 'meat_high', label: '肉類-高脂' }, { id: 'legume', label: '豆類' }, { id: 'veggie', label: '蔬菜類' }, { id: 'fruit', label: '水果類' }, { id: 'oil', label: '油脂類' }];
+    const BSRS_QUESTIONS = ["睡眠困難(如難以入睡、易醒或早醒)", "感覺緊張或不安", "覺得容易苦惱或動怒", "感覺憂鬱、心情低落", "覺得比不上別人", "★有自殺的想法"];
+    const ISI_QUESTIONS = ["入睡困難", "無法維持較長睡眠", "太早醒", "最近睡眠狀態滿意度", "睡眠干擾日常功能程度", "他人是否注意到您的影響", "睡眠問題令您擔心/困擾程度"];
+    const EXERCISE_OPTIONS = { habit: ["完全無經驗", "曾連續3個月以上", "不定期"], freq: ["無", "每週1-2次", "每週3次", "每週3-5次", "每週5-7次"], duration: ["<30分", "30分-1hr", "1-1.5hr", "1.5-2hr", ">2hr"] };
+    const baseMeta = { date: '2026-03-04', author: '測試人員', photos: [], files: [] };
+
+    // ★ 您專屬的 Firebase 金鑰
+    const firebaseConfig = {
+      apiKey: "AIzaSyD1_j1r21OnD43CJHUaraoUthYNmHxk4Zg",
+      authDomain: "lifestyle-med-system.firebaseapp.com",
+      projectId: "lifestyle-med-system",
+      storageBucket: "lifestyle-med-system.firebasestorage.app",
+      messagingSenderId: "820116366544",
+      appId: "1:820116366544:web:b062fe4cf3f9f7e3826ad5",
+      measurementId: "G-1BKJ1ZY7YM"
+    };
+    
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = 'lifestyle-med-system';
+    
+    // 全域狀態 (增加 useCloud 判斷是否使用雲端)
+    window.appState = { 
+        view: 'list', patients: [], selectedPatientId: null, 
+        activeTab: 'CaseManager', lastSaved: '尚未儲存', 
+        currentUser: null, useCloud: true 
+    };
+
+    // --- 雲端與本機雙軌初始化 ---
+    async function initSystem() {
+      lucide.createIcons();
+      try {
+        await signInAnonymously(auth);
+        onAuthStateChanged(auth, (user) => {
+          if (user) {
+            window.appState.currentUser = user;
+            setupRealtimeListener(user.uid);
+          }
+        });
+      } catch (error) { 
+        console.error("Firebase 連線提示: 無法登入，將切換至本機模式。詳細錯誤:", error);
+        fallbackToLocal(true);
+      }
+    }
+
+    // 本機模式啟動
+    function fallbackToLocal(showWarning) {
+        window.appState.useCloud = false;
+        document.getElementById('loading-overlay').style.display = 'none';
+        document.getElementById('app').classList.remove('hidden');
+        
+        if(showWarning) {
+             setTimeout(() => showToast("已切換至本機模式 (雲端連線失敗)", "text-yellow-400", "alert-triangle"), 500);
+        }
+        
+        const savedData = localStorage.getItem('clinicPatientsDataProX_Local');
+        if (savedData) {
+            window.appState.patients = JSON.parse(savedData);
+        } else {
+            window.appState.patients = [createDefaultPatient()];
+        }
+        window.appState.lastSaved = new Date().toLocaleTimeString() + ' (本機)';
+        window.render();
+    }
+
+    // 設定 Firestore 即時監聽
+    let unsubscribeSnapshot = null;
+    function setupRealtimeListener(userId) {
+      if(unsubscribeSnapshot) unsubscribeSnapshot();
+      
+      // 修復路徑：確保 Firestore 路徑為偶數段 (補上最後的文件名稱 'mainList')
+      const docRef = doc(db, 'artifacts', appId, 'users', userId, 'patientsData', 'mainList');
+
+      unsubscribeSnapshot = onSnapshot(docRef, (snapshot) => {
+        document.getElementById('loading-overlay').style.display = 'none';
+        document.getElementById('app').classList.remove('hidden');
+
+        if (snapshot.exists()) {
+          window.appState.patients = snapshot.data().list || [];
+          window.appState.lastSaved = new Date().toLocaleTimeString() + ' (雲端同步)';
+        } else {
+           // 若雲端無資料，建立預設資料並上傳
+           window.appState.patients = [createDefaultPatient()];
+           syncToCloud(); 
+        }
+        window.render();
+      }, (error) => {
+        console.error("Firestore Listen Error:", error);
+        fallbackToLocal(true);
+      });
+    }
+
+    // 雙軌儲存邏輯 (支援雲端與本機)
+    window.syncToCloud = async function() {
+       if (!window.appState.useCloud) {
+           // 本機儲存模式
+           localStorage.setItem('clinicPatientsDataProX_Local', JSON.stringify(window.appState.patients));
+           window.appState.lastSaved = new Date().toLocaleTimeString() + ' (本機)';
+           showToast("已儲存至本機端 (雲端離線)", "text-yellow-400", "hard-drive");
+           window.render();
+           return;
+       }
+
+       // 雲端儲存模式
+       if(!window.appState.currentUser) return;
+       const userId = window.appState.currentUser.uid;
+       // 修復路徑：確保存檔時的 Reference 也是偶數段
+       const docRef = doc(db, 'artifacts', appId, 'users', userId, 'patientsData', 'mainList');
+       
+       try {
+           const timeIndicator = document.getElementById('last-saved-time');
+           if(timeIndicator) timeIndicator.innerHTML = `<i data-lucide="refresh-cw" class="w-4 h-4 animate-spin text-blue-500"></i> 雲端同步中...`;
+           
+           await setDoc(docRef, { list: window.appState.patients });
+           window.appState.lastSaved = new Date().toLocaleTimeString() + ' (雲端同步)';
+           showToast("已同步至 Firebase 雲端", "text-green-400", "cloud-check");
+           if(timeIndicator) timeIndicator.innerHTML = `<i data-lucide="cloud-check" class="w-4 h-4 text-green-500"></i> 已同步: ${window.appState.lastSaved}`;
+       } catch(e) { 
+           console.error("Save Error", e); 
+           showToast("儲存至雲端失敗，請檢查網路", "text-red-400", "alert-circle");
+       }
+    }
+
+    // 共用 Toast 提示
+    function showToast(message, colorClass, icon = "check-circle") {
+       const existingToast = document.getElementById('system-toast');
+       if(existingToast) existingToast.remove();
+       
+       const toast = document.createElement('div');
+       toast.id = 'system-toast';
+       toast.className = 'fixed bottom-4 right-4 bg-slate-800 text-white px-4 py-2 rounded shadow-lg z-50 transition-opacity duration-300 flex items-center gap-2 font-medium';
+       toast.innerHTML = `<i data-lucide="${icon}" class="w-5 h-5 ${colorClass}"></i> ${message}`;
+       document.body.appendChild(toast);
+       lucide.createIcons();
+       setTimeout(() => { toast.classList.add('opacity-0'); setTimeout(() => toast.remove(), 300); }, 2500);
+    }
+
+    function createDefaultPatient() {
+        return {
+            id: 'P001', name: '林秋朎', gender: '女', birthday: '1954-11-16', age: 71, phone: '0989-199605',
+            height: 156, weight: 50, bmi: 20.5, waist: 89, intakeDate: '2026-02-03', clinicName: '李俊杰診所',
+            systolic: 169, diastolic: 87, bpStage: '高血壓第2期', sugar: 115, hbA1c: 8.5, chol: 151, tg: 87, ldl: 56,
+            meds: ['高血壓', '糖尿病'], ckdStage: '3級', ckmStage: '3期', criteria: ['符合高血壓收案', '符合高血糖收案'],
+            otherDiseases: '無', cgmInstallDate: '2026-02-03至2026-02-12', smartBandDate: '2026-02-03',
+            gripStrength: 17.7, asm: 32.8, asmIndex: 13.48, sarcopeniaResult: '肌少症確診', bodyFat: 13.5,
+            professionalNeeds: ['運動計畫', '營養', '社會資源'], smartBandWillingness: '有意願', bodyType: '標準型', photos: [],
+            history: [{ month: '初始', date: '2026-02-03', weight: 50, bodyFat: 13.5, sbp: 169, dbp: 87, sugar: 115, hbA1c: 8.5, chol: 151, tg: 87, ldl: 56 }],
+            followUps: [{ id: 1, date: '2026-02-03', type: '初訪', content: '定期追蹤血糖及血壓變化', recorder: '家慧' }],
+            caseManagerData: { meta: JSON.parse(JSON.stringify(baseMeta)) },
+            exerciseData: { habit: '不定期', freq: '每週1-2次', duration: '30分-1hr', items: ['快走', '散步'], barriers: ['沒動力'], lessons: [{id: 1, completed: true, date: '2026-02-10', aerobic: ['跑步機'], strength: ['下肢(深蹲/硬舉)', '核心穩定'], action: '下肢推50kg 8下3組、棒式1分鐘', photos: [], files: []}], meta: JSON.parse(JSON.stringify(baseMeta)) },
+            nutritionData: { habits: { source: '自己烹調', dietType: '葷', caregiver: '自己', mealsPerDay: 3, giIssues: ['便秘'], regularTiming: '是' }, diabetes: { onsetYear: '2015', treatment: '口服降血糖', selfBloodSugar: '0', hasCareCard: '是' }, goal: '血糖與血壓控制', dailySuggestedKcal: 1692, distribution: { milk_low: { 早餐: 1 }, grain: { 早餐: 2, 午餐: 3, 晚餐: 3 }, meat_low: { 午餐: 2, 晚餐: 2 }, veggie: { 午餐: 1.5, 晚餐: 1.5 }, fruit: { 午點: 1 }, oil: { 午餐: 1 } }, planHistory: [], records: [], meta: JSON.parse(JSON.stringify(baseMeta)) },
+            socialWorkData: { familyStatus: { living: '與家人同住', familyRel: '普通', relativeRel: '疏離', description: '目前與家屬同住，家庭支持系統尚可。' }, emergencyContact: { name: '家屬', relation: '子女', phone: '未提供' }, welfare: { status: ['無'], insurance: ['勞保'] }, treatment: { welfareConsult: ['長照資源'], emotionAdapt: ['引導正向思考', '加強問題解決能力'], familyProblem: ['評估家庭支持系統'], description: '提供健康促進衛教，評估長照資源需求。', signature: '社工師' }, meta: JSON.parse(JSON.stringify(baseMeta)) },
+            psychData: { bsrs: [1, 2, 1, 0, 0, 0], suicideIdeation: 0, isi: [1, 2, 1, 1, 1, 0, 1], records: [{ id: 1, date: '2026-02-25', time: '14:50', project: '門診評估', content: '醫師開立生活型態醫學評估諮詢，安排後續計畫。', recorder: '吳珮如' }], meta: JSON.parse(JSON.stringify(baseMeta)) }
+        };
+    }
+
+    // --- UI 控制與邏輯 ---
+    window.navigateTo = function(view, patientId = null) {
+      window.appState.view = view;
+      if (patientId) {
+        window.appState.selectedPatientId = patientId;
+        window.appState.activeTab = 'CaseManager'; 
+      }
+      window.render();
+    }
+
+    window.switchTab = function(tabId) {
+      window.appState.activeTab = tabId;
+      window.render();
+    }
+
+    window.handleContentUpdate = function(patientId, path, element) {
+      const patient = window.appState.patients.find(p => p.id === patientId);
+      if (!patient) return;
+      const newValue = element.innerText || element.value; 
+      const keys = path.split('.');
+      let current = patient;
+      for (let i = 0; i < keys.length - 1; i++) {
+        if (!current[keys[i]]) current[keys[i]] = {};
+        current = current[keys[i]];
+      }
+      const finalValue = isNaN(newValue) || newValue === '' ? newValue : Number(newValue);
+      current[keys[keys.length - 1]] = finalValue;
+      if (path === 'height' || path === 'weight') {
+          if (patient.height && patient.weight) { patient.bmi = Number((patient.weight / Math.pow(patient.height / 100, 2)).toFixed(1)); }
+      }
+      window.syncToCloud();
+      if(path.includes('bsrs') || path.includes('isi') || path === 'height' || path === 'weight' || path.includes('nutritionData.distribution') || path.includes('nutritionData.dailySuggestedKcal')) {
+          window.render();
+      }
+    }
+
+    window.addNewRecord = function(type) {
+      const patient = window.appState.patients.find(p => p.id === window.appState.selectedPatientId);
+      if (!patient) return;
+      const today = new Date().toISOString().split('T')[0];
+      if (type === 'followUp') {
+        if (!patient.followUps) patient.followUps = [];
+        patient.followUps.push({ id: Date.now(), date: today, type: '追蹤紀錄', content: '請在此輸入新紀錄內容...', recorder: patient.caseManagerData?.meta?.author || '未具名' });
+      } else if (type === 'lesson') {
+        if (!patient.exerciseData.lessons) patient.exerciseData.lessons = [];
+        const nextId = patient.exerciseData.lessons.length + 1;
+        patient.exerciseData.lessons.push({ id: nextId, completed: false, date: today, aerobic: [], strength: [], action: '請輸入訓練備註...', photos: [], files: [] });
+      } else if (type === 'psychRecord') {
+        if (!patient.psychData.records) patient.psychData.records = [];
+        patient.psychData.records.push({ id: Date.now(), date: today, time: new Date().toLocaleTimeString('zh-TW', {hour: '2-digit', minute:'2-digit', hour12: false}), project: '一般會談', content: '請填寫會談紀錄...', recorder: patient.psychData?.meta?.author || '心理師' });
+      } else if (type === 'nutritionRecord') {
+        if (!patient.nutritionData.records) patient.nutritionData.records = [];
+        patient.nutritionData.records.push({ id: Date.now(), date: today, recorder: patient.nutritionData?.meta?.author || '營養師', content: '請輸入本次營養諮詢與衛教紀錄...' });
+      }
+      window.syncToCloud();
+    }
+
+    window.deleteRecordItem = function(path, index) {
+        if(!confirm('確定要刪除這筆紀錄嗎？')) return;
+        const patient = window.appState.patients.find(p => p.id === window.appState.selectedPatientId);
+        let target = patient;
+        const keys = path.split('.');
+        for(let key of keys) target = target[key];
+        if(Array.isArray(target)) { target.splice(index, 1); window.syncToCloud(); }
+    }
+
+    window.saveMetricsHistory = function() {
+        const patient = window.appState.patients.find(p => p.id === window.appState.selectedPatientId);
+        if (!patient) return;
+        const dateInput = document.getElementById('history_date').value;
+        if(!dateInput) { alert('請選擇日期'); return; }
+        let labelInput = document.getElementById('history_label').value;
+        if(!labelInput) { const d = new Date(dateInput); labelInput = `${d.getMonth()+1}/${d.getDate()}`; }
+        if(!patient.history) patient.history = [];
+        patient.history.push({ month: labelInput, date: dateInput, weight: patient.weight, bodyFat: patient.bodyFat, sbp: patient.systolic, dbp: patient.diastolic, sugar: patient.sugar, hbA1c: patient.hbA1c, chol: patient.chol, tg: patient.tg, ldl: patient.ldl });
+        patient.history.sort((a, b) => new Date(a.date) - new Date(b.date));
+        window.syncToCloud(); 
+    };
+
+    window.saveNutritionPlanAsHistory = function() {
+        const patient = window.appState.patients.find(p => p.id === window.appState.selectedPatientId);
+        if (!patient) return;
+        if (!patient.nutritionData.planHistory) patient.nutritionData.planHistory = [];
+        patient.nutritionData.planHistory.unshift({ id: Date.now(), date: new Date().toISOString().split('T')[0], goal: patient.nutritionData.goal || '未設定目標', kcal: patient.nutritionData.dailySuggestedKcal || 0, distribution: JSON.parse(JSON.stringify(patient.nutritionData.distribution || {})) });
+        window.syncToCloud(); 
+    };
+
+    window.toggleArrayItem = function(patientId, path, value, checkboxElement) {
+        const patient = window.appState.patients.find(p => p.id === patientId);
+        if (!patient) return;
+        const keys = path.split('.');
+        let target = patient;
+        for (let i = 0; i < keys.length - 1; i++) { if (!target[keys[i]]) target[keys[i]] = {}; target = target[keys[i]]; }
+        const lastKey = keys[keys.length - 1];
+        if (!Array.isArray(target[lastKey])) target[lastKey] = [];
+        if (checkboxElement.checked) { if (!target[lastKey].includes(value)) target[lastKey].push(value); } 
+        else { target[lastKey] = target[lastKey].filter(v => v !== value); }
+        window.syncToCloud();
+    };
+
+    window.updateOtherArrayItems = function(patientId, path, predefinedOptionsStr, newValueStr) {
+        const patient = window.appState.patients.find(p => p.id === window.appState.selectedPatientId);
+        if (!patient) return;
+        const predefinedOptions = predefinedOptionsStr.split('|');
+        const keys = path.split('.');
+        let target = patient;
+        for (let i = 0; i < keys.length - 1; i++) { if (!target[keys[i]]) target[keys[i]] = {}; target = target[keys[i]]; }
+        const lastKey = keys[keys.length - 1];
+        let currentArr = Array.isArray(target[lastKey]) ? target[lastKey] : [];
+        let updatedArr = currentArr.filter(item => predefinedOptions.includes(item));
+        const newItems = newValueStr.split(/[、,，\s\n]+/).filter(Boolean);
+        newItems.forEach(item => { if (!updatedArr.includes(item)) updatedArr.push(item); });
+        target[lastKey] = updatedArr;
+        window.syncToCloud();
+    };
+
+    window.triggerPhotoUpload = function() { document.getElementById('photo-upload-input').click(); }
+    window.handlePhotoUpload = function(event, patientId) {
+      const file = event.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const patient = window.appState.patients.find(p => p.id === patientId);
+          patient.photos = [{ id: Date.now(), url: e.target.result, name: file.name }];
+          window.syncToCloud(); 
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    window.handleTabAttachmentUpload = function(event, patientId, dataPath, type) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const patient = window.appState.patients.find(p => p.id === patientId);
+        let target = patient;
+        const keys = dataPath.split('.');
+        for (let i = 0; i < keys.length; i++) { if (!target[keys[i]]) target[keys[i]] = {}; target = target[keys[i]]; }
+        if (!target[type]) target[type] = [];
+        target[type].push({ id: Date.now(), name: file.name, url: e.target.result, size: (file.size / 1024).toFixed(1) + ' KB' });
+        target.date = new Date().toISOString().split('T')[0];
+        window.syncToCloud(); 
+      };
+      reader.readAsDataURL(file);
+    }
+
+    window.removeTabAttachment = function(patientId, dataPath, type, attachmentId) {
+      if (!confirm('確定要移除此附件嗎？')) return;
+      const patient = window.appState.patients.find(p => p.id === patientId);
+      let target = patient;
+      const keys = dataPath.split('.');
+      for (let i = 0; i < keys.length; i++) { if (!target[keys[i]]) return; target = target[keys[i]]; }
+      if (target[type]) { target[type] = target[type].filter(item => item.id !== attachmentId); window.syncToCloud(); }
+    }
+
+    // ★ CSV 匯出邏輯
+    window.exportToCSV = function() {
+        const patient = window.appState.patients.find(p => p.id === window.appState.selectedPatientId);
+        if (!patient) return;
+
+        const roleName = ROLES.find(r => r.id === window.appState.activeTab).name;
+        let csvContent = "\uFEFF"; // BOM for Excel UTF-8 support
+        
+        // 1. 共用基本資料區塊
+        csvContent += `[個案基本資料]\n`;
+        csvContent += `姓名,編號,性別,年齡,生日,聯絡電話,收案診所\n`;
+        csvContent += `${patient.name || ''},${patient.id || ''},${patient.gender || ''},${patient.age || ''},${patient.birthday || ''},${patient.phone || ''},${patient.clinicName || ''}\n\n`;
+        
+        csvContent += `[生理指標]\n`;
+        csvContent += `身高(cm),體重(kg),BMI,體脂肪(%),腰圍(cm)\n`;
+        csvContent += `${patient.height || ''},${patient.weight || ''},${patient.bmi || ''},${patient.bodyFat || ''},${patient.waist || ''}\n\n`;
+        
+        csvContent += `[檢驗數據與用藥]\n`;
+        csvContent += `收縮壓(mmHg),舒張壓(mmHg),血壓分期,空腹血糖(mg/dl),糖化血色素(%),總膽固醇(mg/dl),三酸甘油酯(mg/dl),低密度脂蛋白(mg/dl),目前用藥\n`;
+        csvContent += `${patient.systolic || ''},${patient.diastolic || ''},${patient.bpStage || ''},${patient.sugar || ''},${patient.hbA1c || ''},${patient.chol || ''},${patient.tg || ''},${patient.ldl || ''},"${(patient.meds || []).join('、')}"\n\n`;
+
+        // 2. 依據不同職類匯出專屬資料
+        if (window.appState.activeTab === 'CaseManager') {
+            csvContent += `--- ${roleName} 專屬資料 ---\n\n`;
+            csvContent += `[疾病與收案狀態]\n`;
+            csvContent += `收案條件,其他共病,CKD分期,CKM分期\n`;
+            csvContent += `"${Array.isArray(patient.criteria) ? patient.criteria.join('、') : (patient.criteria || '')}","${patient.otherDiseases || ''}",${patient.ckdStage || ''},${patient.ckmStage || ''}\n\n`;
+            
+            csvContent += `[專業需求與科技輔具]\n`;
+            csvContent += `轉介/需求項目,智能手環意願,智能手環裝設日,CGM裝設區間\n`;
+            csvContent += `"${Array.isArray(patient.professionalNeeds) ? patient.professionalNeeds.join('、') : (patient.professionalNeeds || '')}",${patient.smartBandWillingness || ''},${patient.smartBandDate || ''},${patient.cgmInstallDate || ''}\n\n`;
+            
+            csvContent += `[個案追蹤紀錄]\n`;
+            csvContent += `日期,紀錄者,類別,紀錄內容\n`;
+            (patient.followUps || []).forEach(r => {
+                csvContent += `${r.date || ''},${r.recorder || ''},${r.type || ''},"${(r.content || '').replace(/"/g, '""')}"\n`;
+            });
+        } 
+        else if (window.appState.activeTab === 'Coach') {
+            const d = patient.exerciseData || {};
+            csvContent += `--- ${roleName} 專屬資料 ---\n\n`;
+            csvContent += `[體適能與運動狀況]\n`;
+            csvContent += `運動習慣,運動頻率,每次運動時間,常做運動項目,阻礙運動之健康/心理問題\n`;
+            csvContent += `"${d.habit || ''}","${d.freq || ''}","${d.duration || ''}","${Array.isArray(d.items) ? d.items.join('、') : (d.items || '')}","${Array.isArray(d.barriers) ? d.barriers.join('、') : (d.barriers || '')}"\n\n`;
+            
+            csvContent += `[肌少症評估指標]\n`;
+            csvContent += `手握力(kg),握力判定,四肢骨骼肌質量(ASM)(kg),ASM指標(kg/m2),肌肉量判定,肌少症總結\n`;
+            csvContent += `${patient.gripStrength || ''},${patient.gripStatus || ''},${patient.asm || ''},${patient.asmIndex || ''},${patient.muscleStatus || ''},${patient.sarcopeniaResult || ''}\n\n`;
+            
+            csvContent += `[上課紀錄]\n`;
+            csvContent += `堂數,日期,是否完成,有氧訓練項目,肌力訓練項目,訓練備註/強度/次數\n`;
+            (d.lessons || []).forEach(l => {
+                const aerobic = Array.isArray(l.aerobic) ? l.aerobic.join('、') : '';
+                const strength = Array.isArray(l.strength) ? l.strength.join('、') : '';
+                csvContent += `${l.id || ''},${l.date || ''},${l.completed ? '是' : '否'},"${aerobic}","${strength}","${(l.action || '').replace(/"/g, '""')}"\n`;
+            });
+        }
+        else if (window.appState.activeTab === 'Nutritionist') {
+            const d = patient.nutritionData || {};
+            csvContent += `--- ${roleName} 專屬資料 ---\n\n`;
+            csvContent += `[飲食習慣評估]\n`;
+            csvContent += `飲食來源,飲食型態,進餐頻率(餐/日),定時定量,臨床腸胃問題\n`;
+            csvContent += `"${d.habits?.source || ''}","${d.habits?.dietType || ''}","${d.habits?.mealsPerDay || ''}","${d.habits?.regularTiming || ''}","${Array.isArray(d.habits?.giIssues) ? d.habits.giIssues.join('、') : (d.habits?.giIssues || '')}"\n\n`;
+            
+            csvContent += `[糖尿病管理與衛教目標]\n`;
+            csvContent += `發病年份,治療方式,領有糖尿病護照,每日建議熱量(kcal),營養處方目標\n`;
+            csvContent += `"${d.diabetes?.onsetYear || ''}","${d.diabetes?.treatment || ''}","${d.diabetes?.hasCareCard || ''}",${d.dailySuggestedKcal || ''},"${(d.goal || '').replace(/"/g, '""')}"\n\n`;
+            
+            csvContent += `[食物內容設定與各餐次分配 (當前最新)]\n`;
+            csvContent += `食物分類,早餐,早點,午餐,午點,晚餐,晚點,總計\n`;
+            ['milk_low', 'grain', 'meat_low', 'meat_med', 'veggie', 'fruit', 'oil'].forEach(catId => {
+                const category = FOOD_CATEGORIES.find(c => c.id === catId);
+                const dist = d.distribution?.[catId] || {};
+                let total = 0;
+                let row = `"${category?.label || ''}"`;
+                MEAL_TIMES.forEach(meal => {
+                    const val = dist[meal] || '';
+                    if(val) total += Number(val);
+                    row += `,${val}`;
+                });
+                row += `,${total}\n`;
+                csvContent += row;
+            });
+            csvContent += `\n`;
+
+            csvContent += `[營養衛教與會談紀錄]\n`;
+            csvContent += `日期,紀錄者,紀錄內容\n`;
+            (d.records || []).forEach(r => {
+                csvContent += `${r.date || ''},${r.recorder || ''},"${(r.content || '').replace(/"/g, '""')}"\n`;
+            });
+        }
+        else if (window.appState.activeTab === 'SocialWorker') {
+            const d = patient.socialWorkData || {};
+            csvContent += `--- ${roleName} 專屬資料 ---\n\n`;
+            csvContent += `[家庭狀況評估]\n`;
+            csvContent += `居住情形,家庭關係,緊急聯絡人姓名,緊急聯絡人關係,緊急聯絡人電話,家系圖與家庭狀況說明\n`;
+            csvContent += `"${d.familyStatus?.living || ''}","${d.familyStatus?.familyRel || ''}","${d.emergencyContact?.name || ''}","${d.emergencyContact?.relation || ''}","${d.emergencyContact?.phone || ''}","${(d.familyStatus?.description || '').replace(/"/g, '""')}"\n\n`;
+            
+            csvContent += `[福利與保險身分]\n`;
+            csvContent += `社會福利身分,社會保險身分\n`;
+            csvContent += `"${Array.isArray(d.welfare?.status) ? d.welfare.status.join('、') : (d.welfare?.status || '')}","${Array.isArray(d.welfare?.insurance) ? d.welfare.insurance.join('、') : (d.welfare?.insurance || '')}"\n\n`;
+            
+            csvContent += `[處遇內容與說明]\n`;
+            csvContent += `福利諮詢,情緒與疾病適應,家庭問題,處遇說明\n`;
+            csvContent += `"${Array.isArray(d.treatment?.welfareConsult) ? d.treatment.welfareConsult.join('、') : ''}","${Array.isArray(d.treatment?.emotionAdapt) ? d.treatment.emotionAdapt.join('、') : ''}","${Array.isArray(d.treatment?.familyProblem) ? d.treatment.familyProblem.join('、') : ''}","${(d.treatment?.description || '').replace(/"/g, '""')}"\n`;
+        }
+        else if (window.appState.activeTab === 'Psychologist') {
+            const d = patient.psychData || {};
+            csvContent += `--- ${roleName} 專屬資料 ---\n\n`;
+            
+            const bsrsTotal = (d.bsrs || []).slice(0, 5).reduce((a, b) => a + Number(b), 0);
+            const suicideScore = Number(d.bsrs?.[5] || 0);
+            csvContent += `[BSRS-5 簡式健康量表]\n`;
+            csvContent += `總分 (前5題),第6題(自殺意念)分數\n`;
+            csvContent += `${bsrsTotal},${suicideScore}\n`;
+            csvContent += `題號,評估項目(近一週),分數\n`;
+            BSRS_QUESTIONS.forEach((q, idx) => {
+                csvContent += `${idx+1},"${q}",${d.bsrs?.[idx] || 0}\n`;
+            });
+            csvContent += `\n`;
+
+            const isiTotal = (d.isi || []).reduce((a, b) => a + Number(b), 0);
+            csvContent += `[ISI 失眠嚴重度量表]\n`;
+            csvContent += `總分\n`;
+            csvContent += `${isiTotal}\n`;
+            csvContent += `題號,評估項目(近兩週),分數\n`;
+            ISI_QUESTIONS.forEach((q, idx) => {
+                csvContent += `${idx+1},"${q}",${d.isi?.[idx] || 0}\n`;
+            });
+            csvContent += `\n`;
+
+            csvContent += `[照護會談紀錄]\n`;
+            csvContent += `日期,時間,紀錄者,類別/專案,紀錄內容\n`;
+            (d.records || []).forEach(r => {
+                csvContent += `${r.date || ''},${r.time || ''},${r.recorder || ''},"${r.project || ''}","${(r.content || '').replace(/"/g, '""')}"\n`;
+            });
+        }
+
+        // 產生並下載檔案
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a");
+        const url = URL.createObjectURL(blob);
+        link.setAttribute("href", url);
+        link.setAttribute("download", `${patient.name}_${roleName}評估紀錄_${new Date().toISOString().split('T')[0]}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        showToast("已成功匯出 CSV 檔案", "text-blue-400", "download");
+    };
+
+
+    // --- UI 渲染函式群 ---
+    function renderTrendChart(data, dataKey, color, label, unit) {
+      if (!data || data.length === 0 || !data.some(d => d[dataKey])) return `<div class="p-4 text-gray-500 text-center text-sm bg-gray-50 rounded-lg w-full max-w-[280px] flex items-center justify-center border border-slate-100 min-h-[140px]">${label} 尚無資料</div>`;
+      const values = data.map(d => Number(d[dataKey]) || 0).filter(v => v !== 0);
+      if(values.length === 0) return `<div class="p-4 text-gray-500 text-center text-sm bg-gray-50 rounded-lg w-full max-w-[280px] flex items-center justify-center border border-slate-100 min-h-[140px]">${label} 尚無資料</div>`;
+      
+      const max = Math.max(...values) * 1.1;
+      const min = Math.min(...values) * 0.9;
+      const range = max - min === 0 ? 1 : max - min;
+      const width = 240; const height = 100; const paddingX = 20; const paddingY = 20;
+
+      const points = data.map((d, i) => {
+        const val = Number(d[dataKey]) || 0;
+        const x = data.length > 1 ? (i / (data.length - 1)) * (width - paddingX * 2) + paddingX : width / 2;
+        const y = height - paddingY - ((val - min) / range) * (height - paddingY * 2);
+        return { x, y, val, label: d.month };
+      });
+      const pathData = points.map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ');
+      const circlesHtml = points.map(p => `
+        <g class="group cursor-pointer">
+          <circle cx="${p.x}" cy="${p.y}" r="4" fill="white" stroke="${color}" stroke-width="2" class="transition-all group-hover:r-5"></circle>
+          <text x="${p.x}" y="${p.y - 12}" text-anchor="middle" font-size="11" font-weight="bold" fill="${color}" class="opacity-80 group-hover:opacity-100">${p.val}</text>
+        </g>
+      `).join('');
+      const labelsHtml = points.map(p => `<span>${p.label}</span>`).join('');
+
+      return `
+        <div class="flex flex-col items-center p-3 bg-white border border-gray-100 shadow-sm rounded-xl w-full max-w-[280px]">
+          <div class="text-sm font-semibold mb-2 text-gray-700 flex items-center gap-1">${label} <span class="text-xs font-normal text-gray-400">(${unit})</span></div>
+          <div class="relative" style="width: ${width}px; height: ${height}px;">
+            <svg width="${width}" height="${height}" class="absolute top-0 left-0 overflow-visible">
+              <line x1="${paddingX}" y1="${height - paddingY}" x2="${width - paddingX}" y2="${height - paddingY}" stroke="#e5e7eb" stroke-dasharray="4 4" />
+              <line x1="${paddingX}" y1="${paddingY}" x2="${width - paddingX}" y2="${paddingY}" stroke="#e5e7eb" stroke-dasharray="4 4" />
+              <path d="${pathData}" fill="none" stroke="${color}" stroke-width="2.5" class="drop-shadow-sm" />
+              ${circlesHtml}
+            </svg>
+          </div>
+          <div class="flex justify-between w-full px-4 mt-1 text-xs text-gray-400 font-medium">${labelsHtml}</div>
+        </div>
+      `;
+    }
+
+    function renderReadonlyNutritionTable(dist) {
+      const rows = ['milk_low', 'grain', 'meat_low', 'meat_med', 'veggie', 'fruit', 'oil'].map(catId => {
+        const category = FOOD_CATEGORIES.find(c => c.id === catId);
+        const d = dist?.[catId] || {};
+        let total = 0;
+        let cells = MEAL_TIMES.map(meal => {
+          const val = d[meal] || '';
+          if(val) total += Number(val);
+          return `<td class="px-2 py-1.5 text-center text-xs text-slate-700 border-r border-slate-200">${val}</td>`;
+        }).join('');
+        
+        if (total === 0) return ''; 
+        
+        return `<tr class="border-b border-slate-200"><td class="px-3 py-1.5 text-xs font-bold text-slate-800 border-r border-slate-200 bg-slate-50">${category?.label}</td>${cells}<td class="px-3 py-1.5 text-center text-xs font-bold text-orange-600 bg-orange-50">${total}</td></tr>`;
+      }).filter(row => row !== '').join('');
+
+      if (!rows) return '<div class="text-xs text-slate-400 py-2 px-1">該筆紀錄無具體餐次分配數值。</div>';
+
+      return `
+        <div class="overflow-x-auto rounded border border-slate-200 mt-3">
+          <table class="min-w-full border-collapse">
+            <thead class="bg-slate-100">
+              <tr>
+                <th class="px-3 py-2 text-left text-xs font-bold text-slate-700 border-r border-slate-200 border-b w-[15%]">分類</th>
+                ${MEAL_TIMES.map(m => `<th class="px-2 py-2 text-center text-xs font-bold text-slate-700 border-r border-slate-200 border-b w-[12%]">${m}</th>`).join('')}
+                <th class="px-3 py-2 text-center text-xs font-bold text-orange-700 border-b border-slate-200 bg-orange-50 w-[13%]">總計</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    // 全域共用的多選 Checkbox 與其他項目產生器
+    function renderCheckboxes(patientId, options, selectedArr, path, color) {
+        let arr = Array.isArray(selectedArr) ? selectedArr : [];
+        let html = `<div class="flex flex-col gap-2 mt-3"><div class="flex flex-wrap gap-2">`;
+        options.forEach(opt => {
+            const checked = arr.includes(opt) ? 'checked' : '';
+            html += `<label class="flex items-center gap-1.5 cursor-pointer text-sm font-medium bg-${color}-50 border border-${color}-200 px-2 py-1 rounded hover:bg-${color}-100 transition-colors"><input type="checkbox" value="${opt}" ${checked} class="w-3.5 h-3.5 text-${color}-600 rounded border-${color}-300 focus:ring-${color}-500 cursor-pointer" onchange="toggleArrayItem('${patientId}', '${path}', this.value, this)"><span class="text-${color}-800">${opt}</span></label>`;
+        });
+        html += `</div>`;
+        const otherItems = arr.filter(a => !options.includes(a)).join('、');
+        html += `<div class="flex items-center gap-2 text-sm font-medium mt-1 border-t border-${color}-100 pt-2"><span class="text-slate-500 shrink-0 text-xs">其他項目:</span><input type="text" placeholder="點擊輸入 (以頓號或逗號分隔)..." class="flex-1 bg-white border border-slate-200 px-2 py-1.5 rounded outline-none focus:border-${color}-400 focus:ring-1 focus:ring-${color}-400 text-${color}-800 placeholder-slate-400" value="${otherItems}" onblur="updateOtherArrayItems('${patientId}', '${path}', '${options.join('|')}', this.value)"></div></div>`;
+        return html;
+    }
+
+    function renderTabMeta(patientId, dataPath, meta) {
+      const m = meta || {};
+      const date = m.date || new Date().toISOString().split('T')[0];
+      const author = m.author || '測試人員';
+      const photos = m.photos || [];
+      const files = m.files || [];
+      const uniqueId = dataPath.replace(/\./g, '-');
+
+      const photosHtml = photos.map(p => `<div class="relative group"><img src="${p.url}" class="w-20 h-20 object-cover rounded border border-slate-200 shadow-sm cursor-pointer hover:shadow-md transition-shadow" onclick="window.open('${p.url}')"><button onclick="removeTabAttachment('${patientId}', '${dataPath}', 'photos', ${p.id})" class="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"><i data-lucide="x" class="w-3 h-3"></i></button></div>`).join('');
+      const filesHtml = files.map(f => `<div class="flex items-center justify-between bg-white border border-slate-200 px-3 py-2 rounded shadow-sm text-sm hover:border-blue-400 transition-colors cursor-pointer" onclick="window.open('${f.url}')"><div class="flex items-center gap-2 overflow-hidden"><i data-lucide="file-text" class="w-4 h-4 text-blue-500 shrink-0"></i><span class="truncate text-slate-700 font-medium">${f.name}</span><span class="text-xs text-slate-400 shrink-0">(${f.size})</span></div><button onclick="event.stopPropagation(); removeTabAttachment('${patientId}', '${dataPath}', 'files', ${f.id})" class="text-slate-400 hover:text-red-500 ml-2 shrink-0 transition-colors p-1 rounded hover:bg-red-50"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div>`).join('');
+
+      return `
+        <div class="mt-8 pt-6 border-t-2 border-slate-200 bg-slate-50 p-6 rounded-xl border border-slate-100">
+          <h3 class="text-base font-bold text-slate-800 mb-5 flex items-center gap-2"><i data-lucide="paperclip" class="w-5 h-5 text-slate-500"></i> 本頁專屬：編輯紀錄與照片/檔案上傳</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div class="space-y-4">
+               <div class="flex items-center gap-3"><label class="text-sm font-medium text-slate-600 w-16">更新日期</label><div class="text-sm font-medium editable-area px-3 py-1.5 rounded bg-white border border-slate-200 shadow-sm min-w-[120px]" contenteditable="true" onblur="handleContentUpdate('${patientId}', '${dataPath}.date', this)">${date}</div></div>
+               <div class="flex items-center gap-3"><label class="text-sm font-medium text-slate-600 w-16">編寫人員</label><div class="text-sm font-medium editable-area px-3 py-1.5 rounded bg-white border border-slate-200 shadow-sm min-w-[120px]" contenteditable="true" onblur="handleContentUpdate('${patientId}', '${dataPath}.author', this)">${author}</div></div>
+            </div>
+            <div class="bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
+               <div class="flex flex-wrap gap-3 mb-4">
+                 <button onclick="document.getElementById('upload-photo-${uniqueId}').click()" class="text-sm font-bold bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 px-4 py-2 rounded-lg flex items-center gap-2 shadow-sm transition-colors"><i data-lucide="image-plus" class="w-4 h-4"></i> 上傳照片</button>
+                 <button onclick="document.getElementById('upload-file-${uniqueId}').click()" class="text-sm font-bold bg-green-50 border border-green-200 hover:bg-green-100 text-green-700 px-4 py-2 rounded-lg flex items-center gap-2 shadow-sm transition-colors"><i data-lucide="file-up" class="w-4 h-4"></i> 上傳檔案</button>
+                 <input type="file" id="upload-photo-${uniqueId}" class="hidden" accept="image/*" onchange="handleTabAttachmentUpload(event, '${patientId}', '${dataPath}', 'photos')">
+                 <input type="file" id="upload-file-${uniqueId}" class="hidden" onchange="handleTabAttachmentUpload(event, '${patientId}', '${dataPath}', 'files')">
+               </div>
+               <div><h4 class="text-xs font-bold text-slate-500 mb-2 border-b border-slate-100 pb-1">已上傳照片</h4>${photos.length > 0 ? `<div class="flex flex-wrap gap-3">${photosHtml}</div>` : `<div class="text-xs text-slate-400 italic">尚無照片</div>`}</div>
+               <div class="mt-4"><h4 class="text-xs font-bold text-slate-500 mb-2 border-b border-slate-100 pb-1">已上傳檔案</h4>${files.length > 0 ? `<div class="flex flex-col gap-2">${filesHtml}</div>` : `<div class="text-xs text-slate-400 italic">尚無檔案</div>`}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    window.render = function() {
+      const appContainer = document.getElementById('app');
+      let html = renderHeader();
+      if (window.appState.view === 'list') html += `<main class="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full fade-in">${renderList()}</main>`;
+      else if (window.appState.view === 'addCase') html += `<main class="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full fade-in">${renderAddCase()}</main>`;
+      else html += `<main class="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full fade-in">${renderDetail()}</main>`;
+      appContainer.innerHTML = html;
+      lucide.createIcons();
+    }
+
+    function renderHeader() {
+      const modeBadge = window.appState.useCloud ? `<span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded ml-2 shadow-sm"><i data-lucide="cloud" class="w-3 h-3 inline mr-1"></i>雲端版</span>` : `<span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded ml-2 shadow-sm"><i data-lucide="hard-drive" class="w-3 h-3 inline mr-1"></i>本機模式 (離線)</span>`;
+      return `
+        <header class="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
+          <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <div class="bg-blue-600 p-2 rounded-lg"><i data-lucide="activity" class="w-5 h-5 text-white"></i></div>
+              <h1 class="text-xl font-bold text-slate-800 tracking-tight">生活型態醫學整合平台 ${modeBadge}</h1>
+            </div>
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-full"><i data-lucide="user-check" class="w-4 h-4"></i><span>醫療團隊</span></div>
+            </div>
+          </div>
+        </header>
+      `;
+    }
+
+    function renderList() {
+      let rows = window.appState.patients.map(p => `
+        <tr class="hover:bg-slate-50 cursor-pointer transition-colors border-b border-slate-200" onclick="navigateTo('detail', '${p.id}')">
+          <td class="px-6 py-4 whitespace-nowrap"><div class="flex items-center"><div class="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-lg">${p.name.charAt(0)}</div><div class="ml-4"><div class="text-sm font-medium text-slate-900 flex items-center gap-2">${p.name}${p.gender === '女' ? `<span class="text-xs bg-pink-100 text-pink-700 px-2 py-0.5 rounded-full">女</span>` : `<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">男</span>`}</div><div class="text-sm text-slate-500">${p.id} | ${p.age}歲</div></div></div></td>
+          <td class="px-6 py-4 whitespace-nowrap"><div class="text-sm text-slate-900">${p.clinicName}</div><div class="text-xs text-slate-500">${p.intakeDate} 收案</div></td>
+          <td class="px-6 py-4 whitespace-nowrap"><div class="text-sm text-slate-900">BMI: <span class="${p.bmi > 24 ? "text-orange-600 font-medium" : ""}">${p.bmi}</span></div><div class="text-sm text-slate-500">${p.systolic}/${p.diastolic} mmHg</div></td>
+          <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium"><button class="text-blue-600 hover:text-blue-900 flex items-center justify-end gap-1 w-full bg-blue-50 px-3 py-2 rounded-lg transition-colors">進入整合面板 <i data-lucide="chevron-right" class="w-4 h-4"></i></button></td>
+        </tr>
+      `).join('');
+
+      return `
+        <div class="space-y-4">
+          <div class="flex justify-between items-center mb-6">
+            <h2 class="text-2xl font-bold text-slate-800">收案名單庫</h2>
+            <button onclick="navigateTo('addCase')" class="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition-colors shadow-sm"><i data-lucide="user-plus" class="w-4 h-4"></i> 新增個案</button>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <table class="min-w-full"><thead class="bg-slate-50"><tr><th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">個案資料</th><th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">收案診所</th><th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">重要生理指標</th><th class="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">操作</th></tr></thead><tbody class="bg-white">${rows.length > 0 ? rows : `<tr><td colspan="4" class="px-6 py-8 text-center text-slate-500">目前尚無個案資料</td></tr>`}</tbody></table>
+          </div>
+        </div>
+      `;
+    }
+
+    // --- 新增個案表單模組 (含運算邏輯) ---
+    window.addFormCalcAge = function() { const dobStr = document.getElementById('add_dob').value; if (!dobStr) return; const dob = new Date(dobStr); const today = new Date(); let age = today.getFullYear() - dob.getFullYear(); const m = today.getMonth() - dob.getMonth(); if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--; document.getElementById('add_age').value = age; };
+    window.addFormCalcBMI = function() { const h = parseFloat(document.getElementById('add_height').value); const w = parseFloat(document.getElementById('add_weight').value); if (h && w) document.getElementById('add_bmi').value = (w / ((h/100) * (h/100))).toFixed(1); };
+    window.addFormCalcBPStage = function() { const sys = parseInt(document.getElementById('add_sys').value); const dia = parseInt(document.getElementById('add_dia').value); const output = document.getElementById('add_bpStage'); output.classList.remove('text-red-600', 'bg-red-50'); if (!sys || !dia) { output.value = ""; return; } if (sys >= 160 || dia >= 100) { output.value = "高血壓第2期"; output.classList.add('text-red-600', 'bg-red-50'); } else if (sys >= 140 || dia >= 90) { output.value = "高血壓第1期"; output.classList.add('text-red-600', 'bg-red-50'); } else if (sys >= 120 || dia >= 80) { output.value = "高血壓前期"; } else { output.value = "正常"; } };
+    window.addFormCalcASMIndex = function() { const h = parseFloat(document.getElementById('add_height').value); const asm = parseFloat(document.getElementById('add_asm').value); if (h && asm) { document.getElementById('add_asmIndex').value = (asm / ((h/100) * (h/100))).toFixed(2); } else { document.getElementById('add_asmIndex').value = ""; } addFormCalcSarcopenia();  };
+    window.addFormCalcSarcopenia = function() { const gender = document.getElementById('add_gender').value; const grip = parseFloat(document.getElementById('add_grip').value); const asmIndex = parseFloat(document.getElementById('add_asmIndex').value); const gripStatusEl = document.getElementById('add_gripStatus'); const muscleStatusEl = document.getElementById('add_muscleStatus'); const summaryEl = document.getElementById('add_sarcopeniaSummary'); gripStatusEl.classList.remove('text-red-600', 'bg-red-50'); muscleStatusEl.classList.remove('text-red-600', 'bg-red-50'); summaryEl.classList.remove('text-red-600', 'bg-red-50', 'font-bold'); if (!gender) { if (!isNaN(grip)) gripStatusEl.value = "請先選擇性別"; if (!isNaN(asmIndex)) muscleStatusEl.value = "請先選擇性別"; summaryEl.value = ""; return; } let gripCutoff = (gender === '男') ? 28 : 18; let asmCutoff = (gender === '男') ? 7.0 : 5.4; let isGripLow = false, isMuscleLow = false; if (!isNaN(grip)) { if (grip < gripCutoff) { gripStatusEl.value = "異常"; gripStatusEl.classList.add('text-red-600', 'bg-red-50'); isGripLow = true; } else { gripStatusEl.value = "正常"; } } else { gripStatusEl.value = ""; } if (!isNaN(asmIndex)) { if (asmIndex < asmCutoff) { muscleStatusEl.value = "異常"; muscleStatusEl.classList.add('text-red-600', 'bg-red-50'); isMuscleLow = true; } else { muscleStatusEl.value = "正常"; } } else { muscleStatusEl.value = ""; } if (gripStatusEl.value && gripStatusEl.value !== "請先選擇性別" && muscleStatusEl.value && muscleStatusEl.value !== "請先選擇性別") { if (isGripLow && isMuscleLow) { summaryEl.value = "肌少症確診"; summaryEl.classList.add('text-red-600', 'bg-red-50', 'font-bold'); } else if (isGripLow || isMuscleLow) { summaryEl.value = "肌少症可能 (單項異常)"; summaryEl.classList.add('text-red-600', 'bg-red-50'); } else { summaryEl.value = "正常"; } } else { summaryEl.value = ""; } };
+    
+    window.submitNewCase = function() {
+        const form = document.getElementById('addCaseForm');
+        if (!form.reportValidity()) return;
+        const name = document.getElementById('add_name').value;
+        const clinic = document.getElementById('add_clinic').value;
+        const id = document.getElementById('add_id').value || ('P' + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
+        const getChecked = (name) => Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map(cb => cb.value);
+        let needs = getChecked('add_needs');
+        if (document.getElementById('add_needs_other_check').checked) { const otherVal = document.getElementById('add_needs_other_text').value; if (otherVal) needs.push(otherVal); }
+        const newPatient = {
+            id: id, name: name, clinicName: clinic, birthday: document.getElementById('add_dob').value, gender: document.getElementById('add_gender').value, age: Number(document.getElementById('add_age').value), phone: document.getElementById('add_phone').value, intakeDate: new Date().toISOString().split('T')[0], systolic: Number(document.getElementById('add_sys').value), diastolic: Number(document.getElementById('add_dia').value), bpStage: document.getElementById('add_bpStage').value, sugar: Number(document.getElementById('add_sugar').value), hbA1c: Number(document.getElementById('add_hbA1c').value), chol: Number(document.getElementById('add_chol').value), tg: Number(document.getElementById('add_tg').value), ldl: Number(document.getElementById('add_ldl').value), meds: getChecked('add_meds'), otherDiseases: document.getElementById('add_otherDiseases').value, criteria: getChecked('add_criteria'), ckdStage: document.getElementById('add_ckd').value, ckmStage: document.getElementById('add_ckm').value, height: Number(document.getElementById('add_height').value), weight: Number(document.getElementById('add_weight').value), waist: Number(document.getElementById('add_waist').value), bmi: Number(document.getElementById('add_bmi').value), bodyFat: Number(document.getElementById('add_bodyFat').value), asm: Number(document.getElementById('add_asm').value), asmIndex: Number(document.getElementById('add_asmIndex').value), gripStrength: Number(document.getElementById('add_grip').value), sarcopeniaResult: document.getElementById('add_sarcopeniaSummary').value, professionalNeeds: needs, smartBandWillingness: document.querySelector('input[name="add_smartBand"]:checked')?.value || '未填寫', cgmInstallDate: document.getElementById('add_cgmDate').value, smartBandDate: '', bodyType: '標準型', photos: [],
+            history: [{ month: '初始', date: new Date().toISOString().split('T')[0], weight: Number(document.getElementById('add_weight').value), bodyFat: Number(document.getElementById('add_bodyFat').value), sbp: Number(document.getElementById('add_sys').value), dbp: Number(document.getElementById('add_dia').value), sugar: Number(document.getElementById('add_sugar').value), hbA1c: Number(document.getElementById('add_hbA1c').value), chol: Number(document.getElementById('add_chol').value), tg: Number(document.getElementById('add_tg').value), ldl: Number(document.getElementById('add_ldl').value) }],
+            followUps: [{ id: Date.now(), date: new Date().toISOString().split('T')[0], type: '初訪', content: document.getElementById('add_note').value || '完成收案表填寫', recorder: '系統自動建立' }],
+            caseManagerData: { meta: JSON.parse(JSON.stringify(baseMeta)) }, exerciseData: { habit: '', freq: '', duration: '', items: [], barriers: [], lessons: [], meta: JSON.parse(JSON.stringify(baseMeta)) }, nutritionData: { habits: {}, diabetes: {}, goal: '', dailySuggestedKcal: 0, distribution: {}, planHistory: [], records: [], meta: JSON.parse(JSON.stringify(baseMeta)) }, socialWorkData: { familyStatus: {}, emergencyContact: {}, welfare: {}, treatment: {}, meta: JSON.parse(JSON.stringify(baseMeta)) }, psychData: { bsrs: [0,0,0,0,0,0], isi: [0,0,0,0,0,0,0], records: [], meta: JSON.parse(JSON.stringify(baseMeta)) }
+        };
+        window.appState.patients.push(newPatient);
+        window.syncToCloud();
+        window.navigateTo('list');
+    };
+
+    function renderAddCase() {
+        return `
+        <div class="max-w-5xl mx-auto bg-white p-6 md:p-10 rounded-xl shadow-sm border border-slate-200">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 border-b border-slate-200 pb-4 gap-4">
+                <h2 class="text-2xl font-bold text-slate-800 flex items-center gap-3"><div class="bg-blue-100 p-2 rounded-lg text-blue-600"><i data-lucide="file-plus" class="w-6 h-6"></i></div>深耕計畫收案表 - 新增個案</h2>
+                <button onclick="navigateTo('list')" class="text-slate-500 hover:text-slate-800 transition-colors bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg font-medium flex items-center gap-1 shrink-0"><i data-lucide="arrow-left" class="w-4 h-4"></i> 返回列表</button>
+            </div>
+            <form id="addCaseForm" class="space-y-10">
+                <section><h3 class="text-lg font-bold text-blue-700 mb-4 flex items-center gap-2 border-l-4 border-blue-600 pl-3 bg-blue-50/50 py-1.5 rounded-r-lg">基本資料</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">診所名稱 <span class="text-red-500">*</span></label><select id="add_clinic" required class="w-full px-3 py-2 border border-blue-300 bg-blue-50 text-blue-800 font-bold rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"><option value="">-- 請選擇診所 --</option><option value="永康奇美醫院">永康奇美醫院</option><option value="李俊杰診所">李俊杰診所</option><option value="文元診所">文元診所</option><option value="享健達診所">享健達診所</option></select></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">個案姓名 <span class="text-red-500">*</span></label><input type="text" id="add_name" required class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">編號 <span class="text-xs text-slate-400 font-normal">(保留空白自動生成)</span></label><input type="text" id="add_id" placeholder="例如：P002" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">出生日期 <span class="text-red-500">*</span></label><input type="date" id="add_dob" required onchange="addFormCalcAge()" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">性別 <span class="text-red-500">*</span></label><select id="add_gender" required onchange="addFormCalcSarcopenia()" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"><option value="">請選擇</option><option value="男">男</option><option value="女">女</option></select></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">年齡 (自動)</label><input type="number" id="add_age" readonly class="w-full px-3 py-2 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 font-medium outline-none cursor-not-allowed"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">連絡電話</label><input type="tel" id="add_phone" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"></div>
+                    </div>
+                </section>
+                <section><h3 class="text-lg font-bold text-blue-700 mb-4 flex items-center gap-2 border-l-4 border-blue-600 pl-3 bg-blue-50/50 py-1.5 rounded-r-lg">血壓與生化數值</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">收縮壓 (mmHg)</label><input type="number" id="add_sys" oninput="addFormCalcBPStage()" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">舒張壓 (mmHg)</label><input type="number" id="add_dia" oninput="addFormCalcBPStage()" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div class="md:col-span-2"><label class="block text-sm font-semibold text-slate-700 mb-1">血壓分期 (自動)</label><input type="text" id="add_bpStage" readonly class="w-full px-3 py-2 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 font-bold outline-none transition-colors"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">空腹血糖 (mg/dl)</label><input type="number" id="add_sugar" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">糖化血色素 (%) <span class="text-xs text-red-500 font-normal">≥7%</span></label><input type="number" step="0.1" id="add_hbA1c" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">總膽固醇 (mg/dl)</label><input type="number" id="add_chol" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">三酸甘油酯 (mg/dl)</label><input type="number" id="add_tg" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">低密度脂蛋白 (mg/dl)</label><input type="number" id="add_ldl" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div class="md:col-span-3"><label class="block text-sm font-semibold text-slate-700 mb-2">目前使用三高用藥 (可複選)</label><div class="flex gap-4 p-3 border border-slate-200 rounded-lg bg-slate-50 flex-wrap"><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_meds" value="高血壓" class="w-4 h-4 text-blue-600 border-slate-300 rounded"> 高血壓</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_meds" value="糖尿病" class="w-4 h-4 text-blue-600 border-slate-300 rounded"> 糖尿病</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_meds" value="高血脂" class="w-4 h-4 text-blue-600 border-slate-300 rounded"> 高血脂</label></div></div>
+                    </div>
+                </section>
+                <section><h3 class="text-lg font-bold text-blue-700 mb-4 flex items-center gap-2 border-l-4 border-blue-600 pl-3 bg-blue-50/50 py-1.5 rounded-r-lg">疾病狀況</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div class="md:col-span-2"><label class="block text-sm font-semibold text-slate-700 mb-1">其他疾病</label><input type="text" id="add_otherDiseases" placeholder="例如：無" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div class="md:col-span-2"><label class="block text-sm font-semibold text-slate-700 mb-2">過去三高治療經6個月未達標準 <span class="text-xs text-red-500 font-normal">(符合三高其一條件即可)</span></label><div class="flex flex-col sm:flex-row gap-4 p-3 border border-slate-200 rounded-lg bg-slate-50 flex-wrap"><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_criteria" value="不符合" class="w-4 h-4 text-blue-600 rounded"> 不符合</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_criteria" value="符合高血壓收案" class="w-4 h-4 text-blue-600 rounded"> 符合高血壓收案</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_criteria" value="符合高血糖收案" class="w-4 h-4 text-blue-600 rounded"> 符合高血糖收案</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_criteria" value="符合高血脂收案" class="w-4 h-4 text-blue-600 rounded"> 符合高血脂收案</label></div></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">CKD 分期</label><select id="add_ckd" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"><option value="">請選擇</option><option value="1級">1級</option><option value="2級">2級</option><option value="3級">3級</option></select></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">CKM 分期</label><select id="add_ckm" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"><option value="">請選擇</option><option value="1期">1期</option><option value="2期">2期</option><option value="3期">3期</option></select></div>
+                    </div>
+                </section>
+                <section><h3 class="text-lg font-bold text-blue-700 mb-4 flex items-center gap-2 border-l-4 border-blue-600 pl-3 bg-blue-50/50 py-1.5 rounded-r-lg">身體組成與肌少症評估</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">身高 (cm)</label><input type="number" id="add_height" oninput="addFormCalcBMI(); addFormCalcASMIndex();" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">體重 (kg)</label><input type="number" id="add_weight" oninput="addFormCalcBMI()" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">腰圍 (cm)</label><input type="number" id="add_waist" step="0.1" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">BMI (自動)</label><input type="number" id="add_bmi" readonly class="w-full px-3 py-2 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 font-bold outline-none"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">體脂肪 (%)</label><input type="number" step="0.1" id="add_bodyFat" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">骨骼肌肉量 ASM (kg)</label><input type="number" id="add_asm" step="0.1" oninput="addFormCalcASMIndex()" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">ASM 指標 (kg/m²)</label><input type="number" id="add_asmIndex" step="0.01" readonly class="w-full px-3 py-2 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 outline-none"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">手握力 (kg)</label><input type="number" id="add_grip" step="0.1" oninput="addFormCalcSarcopenia()" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">握力判定 (自動)</label><input type="text" id="add_gripStatus" readonly class="w-full px-3 py-2 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 font-bold outline-none"></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">肌肉量判定 (自動)</label><input type="text" id="add_muscleStatus" readonly class="w-full px-3 py-2 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 font-bold outline-none"></div>
+                        <div class="md:col-span-2"><label class="block text-sm font-semibold text-slate-700 mb-1">肌少症總結 (自動)</label><input type="text" id="add_sarcopeniaSummary" readonly class="w-full px-3 py-2 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 font-bold outline-none"></div>
+                    </div>
+                </section>
+                <section><h3 class="text-lg font-bold text-blue-700 mb-4 flex items-center gap-2 border-l-4 border-blue-600 pl-3 bg-blue-50/50 py-1.5 rounded-r-lg">專業需求評估與紀錄</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div class="md:col-span-2"><label class="block text-sm font-semibold text-slate-700 mb-2">需求評估項目 (可複選) <span class="text-xs text-red-500 font-normal">(個別分數低於5分或醫師評估轉介)</span></label><div class="flex flex-wrap gap-4 p-3 border border-slate-200 rounded-lg bg-slate-50"><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_needs" value="運動計畫" class="w-4 h-4 text-blue-600 rounded"> 運動</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_needs" value="營養" class="w-4 h-4 text-blue-600 rounded"> 營養</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_needs" value="睡眠" class="w-4 h-4 text-blue-600 rounded"> 睡眠</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_needs" value="壓力管理" class="w-4 h-4 text-blue-600 rounded"> 壓力管理</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_needs" value="危害物質(菸酒)" class="w-4 h-4 text-blue-600 rounded"> 危害物質(菸酒)</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="checkbox" name="add_needs" value="社會資源" class="w-4 h-4 text-blue-600 rounded"> 社會資源</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium w-full sm:w-auto mt-2 sm:mt-0"><input type="checkbox" id="add_needs_other_check" class="w-4 h-4 text-blue-600 rounded"> 其他: <input type="text" id="add_needs_other_text" placeholder="請輸入" class="border-b border-slate-300 bg-transparent px-2 focus:outline-none focus:border-blue-500"></label></div></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-2">智慧手環配戴意願 <span class="text-xs text-slate-400 font-normal">(後續發放)</span></label><div class="flex gap-4 p-3 border border-slate-200 rounded-lg bg-slate-50"><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="radio" name="add_smartBand" value="有意願" class="w-4 h-4 text-blue-600 focus:ring-blue-500"> 有意願</label><label class="flex items-center gap-2 cursor-pointer text-sm font-medium"><input type="radio" name="add_smartBand" value="無意願" class="w-4 h-4 text-blue-600 focus:ring-blue-500"> 無意願</label></div></div>
+                        <div><label class="block text-sm font-semibold text-slate-700 mb-1">CGM 安裝日 <span class="text-xs text-slate-400 font-normal">(診所端協助安裝)</span></label><input type="date" id="add_cgmDate" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>
+                        <div class="md:col-span-2"><label class="block text-sm font-semibold text-slate-700 mb-1">備註 / 特殊狀況說明</label><textarea id="add_note" rows="3" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white placeholder-slate-400" placeholder="請輸入額外備註..."></textarea></div>
+                    </div>
+                </section>
+                <div class="flex flex-col sm:flex-row justify-end gap-4 mt-8 pt-6 border-t border-slate-200">
+                    <button type="button" onclick="document.getElementById('addCaseForm').reset()" class="px-6 py-3 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-medium transition-colors shadow-sm">清空表格</button>
+                    <button type="button" onclick="submitNewCase()" class="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-md flex items-center justify-center gap-2 text-lg"><i data-lucide="save" class="w-5 h-5"></i> 確認新增並儲存個案</button>
+                </div>
+            </form>
+        </div>
+        `;
+    }
+
+    function renderDetail() {
+      const patient = window.appState.patients.find(p => p.id === window.appState.selectedPatientId);
+      if (!patient) return '';
+      const photoUrl = (patient.photos && patient.photos.length > 0) ? patient.photos[0].url : null;
+      let tabsHtml = ROLES.map(role => {
+        const isActive = window.appState.activeTab === role.id;
+        return `<button onclick="switchTab('${role.id}')" class="flex-1 min-w-[120px] py-4 px-2 flex flex-col items-center justify-center gap-2 transition-all border-b-2 ${isActive ? `${role.border} ${role.bg} ${role.color}` : 'border-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-700'}"><i data-lucide="${role.icon}" class="w-6 h-6 ${isActive ? '' : 'text-slate-400'}"></i><span class="text-sm font-bold">${role.name}</span></button>`;
+      }).join('');
+
+      let tabContentHtml = '';
+      if (window.appState.activeTab === 'CaseManager') tabContentHtml = renderCaseManager(patient);
+      if (window.appState.activeTab === 'Coach') tabContentHtml = renderCoach(patient);
+      if (window.appState.activeTab === 'Nutritionist') tabContentHtml = renderNutritionist(patient);
+      if (window.appState.activeTab === 'SocialWorker') tabContentHtml = renderSocialWorker(patient);
+      if (window.appState.activeTab === 'Psychologist') tabContentHtml = renderPsychologist(patient);
+
+      return `
+        <div class="space-y-4 fade-in">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-4">
+            <button onclick="navigateTo('list')" class="flex items-center text-slate-500 hover:text-slate-800 transition-colors font-medium bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0"><i data-lucide="arrow-left" class="w-4 h-4 mr-1"></i> 返回名單</button>
+            <div class="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+              <span id="last-saved-time" class="text-sm text-slate-500 flex items-center gap-1"><i data-lucide="clock" class="w-4 h-4"></i> 最後更新: ${window.appState.lastSaved}</span>
+              <button onclick="exportToCSV()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-indigo-700 shadow-sm text-sm font-medium transition-colors"><i data-lucide="download" class="w-4 h-4"></i> 匯出本頁 CSV</button>
+              <button onclick="syncToCloud()" class="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 shadow-sm text-sm font-medium transition-colors"><i data-lucide="cloud-upload" class="w-4 h-4"></i> 強制同步</button>
+            </div>
+          </div>
+          <div id="export-content" class="space-y-4 w-full">
+              <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col md:flex-row gap-6 items-start">
+                <div class="flex items-start gap-5 min-w-[300px]">
+                  <div class="relative group cursor-pointer" onclick="triggerPhotoUpload()">
+                    ${photoUrl ? `<img src="${photoUrl}" alt="profile" class="w-20 h-20 rounded-full object-cover border-4 border-slate-50 shadow-sm" />` : `<div class="w-20 h-20 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-3xl font-bold border-4 border-slate-50 shadow-sm">${patient.name.charAt(0)}</div>`}
+                    <div class="absolute inset-0 bg-black/40 rounded-full opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-opacity"><i data-lucide="camera" class="w-6 h-6 text-white mb-1"></i><span class="text-[10px] text-white font-bold">更換照片</span></div>
+                    <div class="absolute bottom-0 right-0 w-5 h-5 rounded-full border-2 border-white ${patient.gender === '女' ? 'bg-pink-400' : 'bg-blue-400'}"></div><input type="file" id="photo-upload-input" class="hidden" accept="image/*" onchange="handlePhotoUpload(event, '${patient.id}')">
+                  </div>
+                  <div>
+                    <div class="flex items-end gap-3 mb-1 flex-wrap"><h2 class="text-2xl font-bold text-slate-800">${patient.name}</h2><span class="text-slate-500 font-medium mb-0.5">${patient.id}</span><span class="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full mb-1 border border-purple-200">${patient.clinicName}</span></div>
+                    <div class="text-sm text-slate-600 space-y-1 mt-2"><div class="flex items-center gap-2"><i data-lucide="calendar" class="w-4 h-4 text-slate-400"></i> ${patient.birthday} (${patient.age}歲)</div><div class="flex items-center gap-2"><i data-lucide="phone" class="w-4 h-4 text-slate-400"></i> ${patient.phone || '未提供電話'}</div></div>
+                  </div>
+                </div>
+                <div class="flex-1 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4 w-full">
+                  <div class="p-3 rounded-lg border bg-slate-50 border-slate-100 flex flex-col justify-center"><div class="text-xs font-medium text-slate-500 mb-1">身高 / 體重</div><div class="text-lg font-bold text-slate-800"><span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'height', this)">${patient.height}</span><span class="text-sm font-normal text-slate-500">cm</span> / <span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'weight', this)">${patient.weight}</span><span class="text-sm font-normal text-slate-500">kg</span></div></div>
+                  <div class="p-3 rounded-lg border ${patient.bmi > 24 || patient.bodyFat > 30 ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100'} flex flex-col justify-center"><div class="text-xs font-medium text-slate-500 mb-1">BMI / 體脂肪</div><div class="text-lg font-bold ${patient.bmi > 24 || patient.bodyFat > 30 ? 'text-red-700' : 'text-slate-800'}"><span class="inline-block">${patient.bmi}</span> / <span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'bodyFat', this)">${patient.bodyFat || '-'}</span><span class="text-sm font-normal text-slate-500">%</span></div></div>
+                  <div class="p-3 rounded-lg border ${(patient.systolic >= 140 || patient.diastolic >= 90) ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100'} flex flex-col justify-center"><div class="text-xs font-medium text-slate-500 mb-1">血壓 (收縮/舒張)</div><div class="text-lg font-bold ${(patient.systolic >= 140 || patient.diastolic >= 90) ? 'text-red-700' : 'text-slate-800'}"><span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'systolic', this)">${patient.systolic}</span>/<span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'diastolic', this)">${patient.diastolic}</span> <span class="text-xs font-normal text-red-600 block sm:inline mt-1 sm:mt-0">${patient.bpStage || ''}</span></div></div>
+                  <div class="p-3 rounded-lg border ${patient.hbA1c >= 6.5 || patient.sugar >= 126 ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100'} flex flex-col justify-center"><div class="text-xs font-medium text-slate-500 mb-1">空腹血糖 / 糖化血色素</div><div class="text-lg font-bold ${patient.hbA1c >= 6.5 || patient.sugar >= 126 ? 'text-red-700' : 'text-slate-800'}"><span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'sugar', this)">${patient.sugar}</span> / <span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'hbA1c', this)">${patient.hbA1c}</span><span class="text-sm font-normal text-slate-500">%</span></div></div>
+                  <div class="p-3 rounded-lg border ${(patient.chol >= 200 || patient.tg >= 150) ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100'} flex flex-col justify-center"><div class="text-xs font-medium text-slate-500 mb-1">總膽固醇 / 三酸甘油酯</div><div class="text-lg font-bold ${(patient.chol >= 200 || patient.tg >= 150) ? 'text-red-700' : 'text-slate-800'}"><span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'chol', this)">${patient.chol || '-'}</span> / <span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'tg', this)">${patient.tg || '-'}</span></div></div>
+                  <div class="p-3 rounded-lg border ${patient.ldl >= 130 ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100'} flex flex-col justify-center"><div class="text-xs font-medium text-slate-500 mb-1">低密度脂蛋白</div><div class="text-lg font-bold ${patient.ldl >= 130 ? 'text-red-700' : 'text-slate-800'}"><span class="editable-area px-1 rounded inline-block" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'ldl', this)">${patient.ldl || '-'}</span> <span class="text-xs font-normal text-slate-500">mg/dL</span></div></div>
+                </div>
+              </div>
+              <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden"><div class="flex overflow-x-auto hide-scrollbar border-b border-slate-200 bg-white">${tabsHtml}</div><div class="p-6 bg-slate-50/50 min-h-[500px]">${tabContentHtml}</div></div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCaseManager(patient) {
+      let recordsHtml = (patient.followUps || []).map((r, index) => `
+        <div class="p-4 border border-slate-200 bg-white rounded-lg flex gap-4 shadow-sm relative group">
+          <button onclick="deleteRecordItem('followUps', ${index})" class="absolute top-2 right-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+          <div class="min-w-[100px]"><div class="text-sm font-bold text-slate-700 editable-area px-1 -ml-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'followUps.${index}.date', this)">${r.date}</div><div class="text-xs text-slate-500 mt-1"><i data-lucide="user" class="w-3 h-3 inline mr-1"></i>${r.recorder}</div></div>
+          <div class="flex-1 border-l border-slate-100 pl-4"><span class="inline-block px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded mb-1 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'followUps.${index}.type', this)">${r.type}</span><div class="text-sm text-slate-700 editable-area p-1 -ml-1 mt-1 rounded min-h-[3rem] border border-transparent hover:border-slate-200 whitespace-pre-wrap" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'followUps.${index}.content', this)">${r.content}</div></div>
+        </div>
+      `).join('');
+      const NEEDS_OPTS = ['運動計畫', '營養', '睡眠', '壓力管理', '危害物質(菸酒)', '社會資源'];
+      const MEDS_OPTS = ['高血壓', '糖尿病', '高血脂'];
+
+      return `
+        <div class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="md:col-span-2 bg-white p-5 rounded-xl border border-slate-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="clipboard-check" class="w-5 h-5 text-blue-600"></i> 疾病與收案狀態</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div><label class="text-xs text-slate-500 block mb-1">收案條件 (可點擊文字編輯)</label><div class="flex gap-2 flex-wrap"><span class="bg-blue-100 text-blue-800 text-sm px-3 py-1.5 rounded font-medium editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'criteria', this)">${Array.isArray(patient.criteria) ? patient.criteria.join('、') : (patient.criteria || '無')}</span></div></div>
+                <div><label class="text-xs text-slate-500 block mb-1">其他共病</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'otherDiseases', this)">${patient.otherDiseases || '無'}</div></div>
+                <div><label class="text-xs text-slate-500 block mb-1">慢性腎臟病 (CKD) 分期</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'ckdStage', this)">${patient.ckdStage || '未判定'}</div></div>
+                <div><label class="text-xs text-slate-500 block mb-1">心血管健康 (CKM) 分期</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'ckmStage', this)">${patient.ckmStage || '未判定'}</div></div>
+              </div>
+            </div>
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="watch" class="w-5 h-5 text-blue-600"></i> 科技輔具</h3>
+              <div class="space-y-4">
+                <div><label class="text-xs text-slate-500 block">智能手環意願</label><div class="text-sm font-medium border-b border-slate-100 pb-1 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'smartBandWillingness', this)">${patient.smartBandWillingness || '未填寫'}</div></div>
+                <div><label class="text-xs text-slate-500 block">智能手環裝設日</label><div class="text-sm font-medium border-b border-slate-100 pb-1 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'smartBandDate', this)">${patient.smartBandDate || '尚未裝設'}</div></div>
+                <div><label class="text-xs text-slate-500 block">連續血糖監測 (CGM) 裝設區間</label><div class="text-sm font-medium border-b border-slate-100 pb-1 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'cgmInstallDate', this)">${patient.cgmInstallDate || '尚未裝設'}</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+             <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="test-tube" class="w-5 h-5 text-blue-600"></i> 進階數值與用藥</h3>
+               <div class="grid grid-cols-2 gap-4">
+                  <div class="col-span-2">
+                    <label class="text-xs text-slate-500 block mb-1">三高用藥 (勾選即時儲存)</label>
+                    ${renderCheckboxes(patient.id, MEDS_OPTS, patient.meds, 'meds', 'blue')}
+                  </div>
+                  <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">腰圍 (cm)</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'waist', this)">${patient.waist || '-'}</div></div>
+               </div>
+             </div>
+             <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="target" class="w-5 h-5 text-blue-600"></i> 專業需求評估</h3>
+               <div class="space-y-4"><div><label class="text-xs text-slate-500 block mb-2">轉介/需求項目 (勾選即時儲存)</label>${renderCheckboxes(patient.id, NEEDS_OPTS, patient.professionalNeeds, 'professionalNeeds', 'blue')}</div></div>
+             </div>
+          </div>
+          <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-5 gap-4 border-b border-slate-100 pb-4"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="trending-up" class="w-5 h-5 text-blue-600"></i> 三高與體脂數值趨勢紀錄</h3><div class="flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200 flex-wrap"><span class="text-xs font-bold text-slate-500">新增紀錄:</span><input type="date" id="history_date" class="text-sm px-2 py-1 border border-slate-300 rounded outline-none focus:border-blue-500" value="${new Date().toISOString().split('T')[0]}"><input type="text" id="history_label" placeholder="標籤 (如: 追蹤1)" class="text-sm px-2 py-1 border border-slate-300 rounded outline-none focus:border-blue-500 w-28"><button onclick="saveMetricsHistory()" class="text-sm bg-blue-600 text-white hover:bg-blue-700 px-3 py-1 rounded flex items-center gap-1 font-bold transition-colors shadow-sm"><i data-lucide="save" class="w-4 h-4"></i> 儲存目前數據</button></div></div>
+            <div class="flex flex-wrap gap-4 justify-around mb-6">
+              ${renderTrendChart(patient.history, 'sbp', '#ef4444', '收縮壓', 'mmHg')}${renderTrendChart(patient.history, 'sugar', '#3b82f6', '空腹血糖', 'mg/dL')}${renderTrendChart(patient.history, 'hbA1c', '#8b5cf6', '糖化血色素', '%')}${renderTrendChart(patient.history, 'chol', '#f59e0b', '總膽固醇', 'mg/dL')}${renderTrendChart(patient.history, 'tg', '#14b8a6', '三酸甘油酯', 'mg/dL')}${renderTrendChart(patient.history, 'ldl', '#6366f1', '低密度脂蛋白', 'mg/dL')}${renderTrendChart(patient.history, 'weight', '#10b981', '體重', 'kg')}${renderTrendChart(patient.history, 'bodyFat', '#ec4899', '體脂肪', '%')}
+            </div>
+            <div class="mt-4 pt-4 border-t border-slate-100"><h4 class="text-sm font-bold text-slate-700 mb-2">已儲存之歷史紀錄</h4>
+                <div class="overflow-x-auto rounded border border-slate-200"><table class="min-w-full border-collapse text-xs text-slate-600"><thead class="bg-slate-50 border-b border-slate-200"><tr><th class="px-3 py-2 text-left font-bold text-slate-700">日期 / 標籤</th><th class="px-2 py-2 text-center font-bold text-slate-700 border-l border-slate-200">收縮/舒張</th><th class="px-2 py-2 text-center font-bold text-slate-700 border-l border-slate-200">血糖/HbA1c</th><th class="px-2 py-2 text-center font-bold text-slate-700 border-l border-slate-200">總膽固醇/TG/LDL</th><th class="px-2 py-2 text-center font-bold text-slate-700 border-l border-slate-200">體重/體脂</th><th class="px-3 py-2 text-right font-bold text-slate-700 border-l border-slate-200">操作</th></tr></thead><tbody>${(patient.history || []).map((h, i) => `<tr class="border-b border-slate-100 hover:bg-slate-50 transition-colors"><td class="px-3 py-2 font-medium text-slate-800">${h.date} <span class="text-slate-400 font-normal">(${h.month})</span></td><td class="px-2 py-2 text-center border-l border-slate-100">${h.sbp || '-'}/${h.dbp || '-'}</td><td class="px-2 py-2 text-center border-l border-slate-100">${h.sugar || '-'}/${h.hbA1c || '-'}</td><td class="px-2 py-2 text-center border-l border-slate-100">${h.chol || '-'}/${h.tg || '-'}/${h.ldl || '-'}</td><td class="px-2 py-2 text-center border-l border-slate-100">${h.weight || '-'}kg / ${h.bodyFat || '-'}%</td><td class="px-3 py-2 text-right border-l border-slate-100"><button onclick="deleteRecordItem('history', ${i})" class="text-slate-400 hover:text-red-500 transition-colors bg-white hover:bg-red-50 p-1 rounded border border-slate-200 shadow-sm"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></td></tr>`).join('')}</tbody></table></div>${!(patient.history && patient.history.length > 0) ? `<div class="text-center text-slate-400 py-4 text-xs italic">尚無歷史紀錄</div>` : ''}
+            </div>
+          </div>
+          <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm"><div class="flex justify-between items-center mb-4"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="history" class="w-5 h-5 text-blue-600"></i> 個案追蹤紀錄</h3><button onclick="addNewRecord('followUp')" class="text-sm bg-blue-50 text-blue-600 hover:bg-blue-100 px-3 py-1.5 rounded-lg flex items-center gap-1 font-medium transition-colors"><i data-lucide="plus" class="w-4 h-4"></i> 新增紀錄</button></div><div class="space-y-3">${recordsHtml.length > 0 ? recordsHtml : '<div class="text-center text-slate-400 py-4 text-sm">尚無紀錄</div>'}</div></div>
+          ${renderTabMeta(patient.id, 'caseManagerData.meta', patient.caseManagerData?.meta)}
+        </div>
+      `;
+    }
+
+    function renderCoach(patient) {
+      const d = patient.exerciseData || {};
+      const genSelect = (options, current, path) => `<select class="custom-select w-full text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none" onchange="handleContentUpdate('${patient.id}', '${path}', this)">${options.map(o => `<option value="${o}" ${o === current ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+      const renderMiniCheckboxes = (lessonIdx, type, options, selectedArr) => {
+          let arr = Array.isArray(selectedArr) ? selectedArr : []; let path = `exerciseData.lessons.${lessonIdx}.${type}`; let html = `<div class="flex flex-wrap gap-1.5 mt-1">`;
+          options.forEach(opt => { const checked = arr.includes(opt) ? 'checked' : ''; html += `<label class="flex items-center gap-1 cursor-pointer text-[10px] font-medium bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded hover:bg-slate-100 transition-colors"><input type="checkbox" value="${opt}" ${checked} class="w-3 h-3 text-green-600 rounded border-slate-300 focus:ring-green-500 cursor-pointer" onchange="toggleArrayItem('${patient.id}', '${path}', this.value, this)"><span class="text-slate-600">${opt}</span></label>`; });
+          return html + `</div>`;
+      };
+      const AEROBIC_OPTS = ['跑步機', '腳踏車/飛輪', '滑步/橢圓機', '徒手有氧', '游泳/水中有氧'];
+      const STRENGTH_OPTS = ['上肢(推/拉)', '下肢(深蹲/硬舉)', '核心穩定', '全身協調', '機械器材', '自由重量'];
+
+      const lessonsHtml = (d.lessons || []).map((lesson, idx) => {
+        const l_photos = lesson.photos || []; const l_files = lesson.files || []; const uniqueId = `lesson-${idx}`; const dataPath = `exerciseData.lessons.${idx}`;
+        const photosHtml = l_photos.map(p => `<div class="relative group inline-block mr-2 mb-2"><img src="${p.url}" class="w-12 h-12 object-cover rounded border border-slate-200 shadow-sm cursor-pointer hover:shadow-md transition-shadow" onclick="window.open('${p.url}')"><button onclick="removeTabAttachment('${patient.id}', '${dataPath}', 'photos', ${p.id})" class="absolute -top-1.5 -right-1.5 bg-red-500 hover:bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"><i data-lucide="x" class="w-2.5 h-2.5"></i></button></div>`).join('');
+        const filesHtml = l_files.map(f => `<div class="flex items-center justify-between bg-white border border-slate-200 px-2 py-1 rounded shadow-sm text-xs hover:border-blue-400 transition-colors cursor-pointer mb-1 w-full" onclick="window.open('${f.url}')"><div class="flex items-center gap-1.5 overflow-hidden"><i data-lucide="file-text" class="w-3 h-3 text-blue-500 shrink-0"></i><span class="truncate text-slate-700 font-medium max-w-[120px]">${f.name}</span></div><button onclick="event.stopPropagation(); removeTabAttachment('${patient.id}', '${dataPath}', 'files', ${f.id})" class="text-slate-400 hover:text-red-500 ml-1 shrink-0 transition-colors rounded hover:bg-red-50"><i data-lucide="trash-2" class="w-3 h-3"></i></button></div>`).join('');
+
+        return `<div class="w-72 border rounded-xl p-4 flex flex-col relative group shadow-sm flex-shrink-0 ${lesson.completed ? 'bg-green-50/50 border-green-300' : 'bg-white border-slate-200'}">
+          <button onclick="deleteRecordItem('exerciseData.lessons', ${idx})" class="absolute top-2 right-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+          <div class="flex justify-between items-center mb-3 border-b border-slate-100 pb-2"><span class="text-sm font-black ${lesson.completed ? 'text-green-700' : 'text-slate-700'}">第 ${lesson.id} 堂</span><div class="flex items-center gap-3"><div class="text-xs text-slate-500 flex items-center gap-1 bg-white px-2 py-1 rounded border border-slate-100"><i data-lucide="calendar" class="w-3 h-3 text-blue-500"></i> <span class="editable-area min-w-[60px]" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'exerciseData.lessons.${idx}.date', this)">${lesson.date || '選擇日期'}</span></div><label class="flex items-center cursor-pointer" title="標示為已完成"><input type="checkbox" class="sr-only peer" ${lesson.completed ? 'checked' : ''} onchange="handleContentUpdate('${patient.id}', 'exerciseData.lessons.${idx}.completed', {value: this.checked})"><div class="w-5 h-5 border-2 rounded peer-checked:bg-green-500 peer-checked:border-green-500 border-slate-300 flex items-center justify-center transition-colors"><i data-lucide="check" class="w-3 h-3 text-white opacity-0 peer-checked:opacity-100"></i></div></label></div></div>
+          <div class="mb-3"><div class="text-xs font-bold text-slate-700 flex items-center gap-1"><i data-lucide="wind" class="w-3 h-3 text-blue-400"></i> 有氧訓練</div>${renderMiniCheckboxes(idx, 'aerobic', AEROBIC_OPTS, lesson.aerobic)}</div>
+          <div class="mb-3"><div class="text-xs font-bold text-slate-700 flex items-center gap-1"><i data-lucide="dumbbell" class="w-3 h-3 text-orange-400"></i> 肌力訓練</div>${renderMiniCheckboxes(idx, 'strength', STRENGTH_OPTS, lesson.strength)}</div>
+          <div class="mt-auto flex flex-col h-full"><div class="text-xs font-bold text-slate-700 flex items-center gap-1 mb-1"><i data-lucide="pen-line" class="w-3 h-3 text-slate-400"></i> 訓練備註 / 強度 / 次數</div><div class="text-xs text-slate-700 bg-slate-50 p-2 rounded-lg border border-slate-200 editable-area min-h-[3rem] leading-relaxed mb-3 flex-grow" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'exerciseData.lessons.${idx}.action', this)">${lesson.action || '請輸入詳細訓練內容、重量或學員回饋...'}</div>
+          <div class="border-t border-slate-100 pt-2 mt-auto"><div class="flex gap-2 mb-2"><button onclick="document.getElementById('upload-photo-${uniqueId}').click()" class="text-[10px] font-bold bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 px-2 py-1 rounded flex items-center gap-1 shadow-sm transition-colors"><i data-lucide="image-plus" class="w-3 h-3"></i> 加照片</button><button onclick="document.getElementById('upload-file-${uniqueId}').click()" class="text-[10px] font-bold bg-green-50 border border-green-200 hover:bg-green-100 text-green-700 px-2 py-1 rounded flex items-center gap-1 shadow-sm transition-colors"><i data-lucide="file-up" class="w-3 h-3"></i> 加檔案</button><input type="file" id="upload-photo-${uniqueId}" class="hidden" accept="image/*" onchange="handleTabAttachmentUpload(event, '${patient.id}', '${dataPath}', 'photos')"><input type="file" id="upload-file-${uniqueId}" class="hidden" onchange="handleTabAttachmentUpload(event, '${patient.id}', '${dataPath}', 'files')"></div>${l_photos.length > 0 ? `<div>${photosHtml}</div>` : ''}${l_files.length > 0 ? `<div class="mt-1">${filesHtml}</div>` : ''}</div></div>
+        </div>`;
+      }).join('');
+
+      return `
+        <div class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="md:col-span-3 bg-white p-5 rounded-xl border border-green-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="dumbbell" class="w-5 h-5 text-green-600"></i> 體適能與運動狀況</h3><div class="grid grid-cols-1 md:grid-cols-3 gap-y-4 gap-x-6"><div><label class="text-xs text-slate-500 block mb-1">運動習慣</label>${genSelect(EXERCISE_OPTIONS.habit, d.habit, 'exerciseData.habit')}</div><div><label class="text-xs text-slate-500 block mb-1">運動頻率</label>${genSelect(EXERCISE_OPTIONS.freq, d.freq, 'exerciseData.freq')}</div><div><label class="text-xs text-slate-500 block mb-1">每次運動時間</label>${genSelect(EXERCISE_OPTIONS.duration, d.duration, 'exerciseData.duration')}</div><div class="md:col-span-3"><label class="text-xs text-slate-500 block mb-1">常做運動項目 (點擊編輯)</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'exerciseData.items', this)">${Array.isArray(d.items) ? d.items.join('、') : (d.items || '無')}</div></div><div class="md:col-span-3"><label class="text-xs text-slate-500 block mb-1">阻礙運動之健康/心理問題</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area text-red-600" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'exerciseData.barriers', this)">${Array.isArray(d.barriers) ? d.barriers.join('、') : (d.barriers || '無明顯障礙')}</div></div></div></div>
+            <div class="bg-white p-5 rounded-xl border border-green-200 shadow-sm flex flex-col justify-center"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="activity" class="w-5 h-5 text-green-600"></i> 肌少症評估指標</h3><div class="space-y-5"><div><div class="flex justify-between text-sm mb-1"><span class="text-slate-500">手握力 (Grip)</span> <span class="font-bold text-slate-800">${patient.gripStrength || '-'} kg</span></div><div class="w-full bg-slate-100 rounded-full h-2.5"><div class="bg-orange-400 h-2.5 rounded-full" style="width: 45%"></div></div><div class="text-[10px] text-slate-400 mt-1 text-right">${patient.gender === '男' ? '男性標準 < 28kg' : '女性標準 < 18kg'}</div></div><div><div class="flex justify-between text-sm mb-1"><span class="text-slate-500">四肢骨骼肌質量 (ASM)</span> <span class="font-bold text-slate-800">${patient.asm || '-'} kg</span></div></div><div class="pt-3 border-t border-slate-100"><div class="text-center text-sm font-bold py-2 rounded-lg ${patient.sarcopeniaResult?.includes('確診') || patient.sarcopeniaResult?.includes('可能') ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}"><i data-lucide="alert-triangle" class="w-4 h-4 inline mb-0.5"></i> ${patient.sarcopeniaResult || '未檢測'}</div></div></div></div>
+          </div>
+          <div class="bg-white p-5 rounded-xl border border-green-200 shadow-sm"><div class="flex justify-between items-center mb-4"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="list-checks" class="w-5 h-5 text-green-600"></i> 上課紀錄區塊 (勾選與附件即時儲存)</h3><button onclick="addNewRecord('lesson')" class="text-sm bg-green-50 text-green-700 hover:bg-green-100 px-3 py-1.5 rounded-lg flex items-center gap-1 font-medium transition-colors border border-green-200"><i data-lucide="plus" class="w-4 h-4"></i> 新增課表</button></div><div class="overflow-x-auto pb-4"><div class="flex gap-5 min-w-max px-1 items-stretch">${lessonsHtml}</div></div></div>
+          ${renderTabMeta(patient.id, 'exerciseData.meta', d.meta)}
+        </div>
+      `;
+    }
+
+    function renderNutritionist(patient) {
+      const d = patient.nutritionData || {};
+      let tableRows = ['milk_low', 'grain', 'meat_low', 'meat_med', 'veggie', 'fruit', 'oil'].map(catId => {
+        const category = FOOD_CATEGORIES.find(c => c.id === catId); const dist = d.distribution?.[catId] || {}; let total = 0;
+        let cells = MEAL_TIMES.map(meal => { const val = dist[meal] || ''; if(val) total += Number(val); return `<td class="px-3 py-2 text-center text-sm text-slate-700 border-r border-slate-200 bg-white"><div class="editable-area w-full h-full p-1" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.distribution.${catId}.${meal}', this)">${val}</div></td>`; }).join('');
+        return `<tr class="border-b border-slate-200 hover:bg-orange-50/30 transition-colors"><td class="px-4 py-3 text-sm text-slate-800 border-r border-slate-200 font-bold bg-slate-50">${category?.label}</td>${cells}<td class="px-4 py-3 text-center text-base font-black text-orange-600 bg-orange-50">${total || '-'}</td></tr>`;
+      }).join('');
+
+      let planHistoryHtml = (d.planHistory || []).map((record, index) => `
+         <div class="p-4 border border-slate-200 bg-white rounded-lg shadow-sm relative group mb-4 hover:border-orange-300 transition-colors"><button onclick="deleteRecordItem('nutritionData.planHistory', ${index})" class="absolute top-2 right-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button><div class="flex justify-between items-center mb-3 border-b border-slate-100 pb-2"><div class="text-sm font-bold text-slate-700 flex items-center gap-2"><i data-lucide="calendar" class="w-4 h-4"></i> ${record.date}</div><div class="text-xs bg-orange-100 text-orange-800 px-3 py-1 rounded-full font-bold shadow-sm">建議熱量: ${record.kcal} kcal</div></div><div class="text-sm text-slate-700 mb-2 border-l-2 border-orange-400 pl-2"><strong>衛教目標：</strong> ${record.goal || '未設定'}</div>${renderReadonlyNutritionTable(record.distribution)}</div>
+      `).join('');
+      
+      let recordsHtml = (d.records || []).map((r, index) => `
+        <div class="p-4 border border-slate-200 bg-white rounded-xl flex gap-4 shadow-sm relative group hover:border-orange-300 transition-colors"><button onclick="deleteRecordItem('nutritionData.records', ${index})" class="absolute top-2 right-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button><div class="text-center min-w-[90px] pr-4 border-r border-slate-100"><div class="text-sm font-bold text-slate-700 editable-area px-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.records.${index}.date', this)">${r.date}</div><div class="text-[10px] text-slate-400 mt-2"><i data-lucide="pen-tool" class="w-3 h-3 inline mr-1"></i>${r.recorder}</div></div><div class="flex-1 pl-2"><div class="text-sm text-slate-700 leading-relaxed editable-area p-1 min-h-[3rem] border border-transparent hover:border-slate-200 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.records.${index}.content', this)">${r.content}</div></div></div>
+      `).join('');
+
+      return `
+        <div class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-white p-5 rounded-xl border border-orange-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="coffee" class="w-5 h-5 text-orange-600"></i> 飲食習慣評估</h3><div class="grid grid-cols-2 gap-y-4 gap-x-6"><div><label class="text-xs text-slate-500 block mb-1">飲食來源</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.habits.source', this)">${d.habits?.source || '-'}</div></div><div><label class="text-xs text-slate-500 block mb-1">飲食型態</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.habits.dietType', this)">${d.habits?.dietType || '-'}</div></div><div><label class="text-xs text-slate-500 block mb-1">進餐頻率 (餐/日)</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.habits.mealsPerDay', this)">${d.habits?.mealsPerDay || '-'}</div></div><div><label class="text-xs text-slate-500 block mb-1">定時定量</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.habits.regularTiming', this)">${d.habits?.regularTiming || '-'}</div></div><div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">臨床腸胃問題</label><div class="text-sm font-medium text-orange-700 bg-orange-50 border border-orange-100 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.habits.giIssues', this)">${Array.isArray(d.habits?.giIssues) ? d.habits.giIssues.join('、') : (d.habits?.giIssues || '無')}</div></div></div></div>
+            <div class="bg-white p-5 rounded-xl border border-orange-200 shadow-sm flex flex-col"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="shield-alert" class="w-5 h-5 text-orange-600"></i> 糖尿病管理與衛教目標</h3><div class="grid grid-cols-2 gap-y-4 gap-x-6 mb-4"><div><label class="text-xs text-slate-500 block mb-1">發病年份</label><div class="text-sm font-bold text-slate-700">${d.diabetes?.onsetYear || '-'} 年</div></div><div><label class="text-xs text-slate-500 block mb-1">治療方式</label><div class="text-sm font-bold text-slate-700">${d.diabetes?.treatment || '-'}</div></div><div><label class="text-xs text-slate-500 block mb-1">領有糖尿病護照</label><div class="text-sm font-bold text-slate-700">${d.diabetes?.hasCareCard || '-'}</div></div></div><div class="mt-auto bg-orange-50 p-4 rounded-lg border border-orange-200"><div class="flex justify-between items-center mb-2"><span class="text-sm text-orange-800 font-bold flex items-center gap-1"><i data-lucide="target" class="w-4 h-4"></i> 營養處方目標</span><span class="text-xs bg-orange-200 text-orange-800 px-2 py-1 rounded-full font-bold shadow-sm">每日建議熱量: <span class="editable-area px-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.dailySuggestedKcal', this)">${d.dailySuggestedKcal || 0}</span> kcal</span></div><div class="text-base text-orange-900 font-bold bg-white p-2 rounded border border-orange-100 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'nutritionData.goal', this)">${d.goal || '請輸入衛教目標...'}</div></div></div>
+          </div>
+          <div class="bg-white p-5 rounded-xl border border-orange-200 shadow-sm overflow-hidden relative"><div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="pie-chart" class="w-5 h-5 text-orange-600"></i> 食物內容設定與各餐次分配 (份)<span class="text-xs font-normal text-slate-400 ml-2">(點擊儲存格數字即可編輯，失去焦點即自動存檔重算)</span></h3><button onclick="saveNutritionPlanAsHistory()" class="text-sm bg-orange-600 text-white hover:bg-orange-700 px-4 py-2 rounded-lg flex items-center gap-2 font-bold transition-colors shadow-sm shrink-0"><i data-lucide="archive" class="w-4 h-4"></i> 將此配置存為歷史處方</button></div><div class="overflow-x-auto rounded-lg border border-slate-200"><table class="min-w-full border-collapse"><thead class="bg-slate-100"><tr><th class="px-4 py-3 text-left text-sm font-bold text-slate-700 border-r border-slate-200 border-b w-[15%]">食物分類</th>${MEAL_TIMES.map(m => `<th class="px-3 py-3 text-center text-sm font-bold text-slate-700 border-r border-slate-200 border-b w-[12%]">${m}</th>`).join('')}<th class="px-4 py-3 text-center text-sm font-bold text-orange-700 border-b border-slate-200 bg-orange-50 w-[13%]">最新總計</th></tr></thead><tbody>${tableRows}</tbody></table></div></div>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div class="bg-white p-5 rounded-xl border border-orange-200 shadow-sm flex flex-col"><div class="flex justify-between items-center mb-5 border-b border-slate-100 pb-3"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="file-text" class="w-5 h-5 text-orange-600"></i> 營養衛教與會談紀錄</h3><button onclick="addNewRecord('nutritionRecord')" class="text-sm bg-orange-50 text-orange-700 hover:bg-orange-100 px-3 py-1.5 rounded-lg flex items-center gap-1 font-medium transition-colors border border-orange-200"><i data-lucide="plus" class="w-4 h-4"></i> 新增紀錄</button></div><div class="space-y-4 flex-1">${recordsHtml.length > 0 ? recordsHtml : '<div class="text-center text-slate-400 py-8 text-sm bg-slate-50 rounded-lg border border-dashed border-slate-200">尚無會談與衛教紀錄</div>'}</div></div>
+              <div class="bg-white p-5 rounded-xl border border-orange-200 shadow-sm flex flex-col bg-slate-50/50"><div class="flex justify-between items-center mb-5 border-b border-slate-200 pb-3"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="history" class="w-5 h-5 text-orange-600"></i> 歷史處方與目標紀錄</h3></div><div class="space-y-4 flex-1 overflow-y-auto pr-2" style="max-height: 600px;">${planHistoryHtml.length > 0 ? planHistoryHtml : '<div class="text-center text-slate-400 py-8 text-sm bg-white rounded-lg border border-dashed border-slate-200 shadow-sm">尚無存檔的歷史處方</div>'}</div></div>
+          </div>
+          ${renderTabMeta(patient.id, 'nutritionData.meta', d.meta)}
+        </div>
+      `;
+    }
+
+    function renderSocialWorker(patient) {
+      const d = patient.socialWorkData || {};
+      const WELFARE_OPTS = ['急難救助', '社會福利身分', '社會保險', '身心障礙福利', '長照資源', '輔具租借資訊', '心理衛生資源', '法律扶助'];
+      const EMOTION_OPTS = ['評估疾病認知', '促進疾病調適', '情緒支持', '引導正向思考', '加強問題解決能力'];
+      const FAMILY_OPTS = ['評估家庭支持系統', '促進家庭溝通', '脆弱家庭評估或通報'];
+
+      return `
+        <div class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-white p-5 rounded-xl border border-purple-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="home" class="w-5 h-5 text-purple-600"></i> 家庭狀況評估</h3><div class="space-y-4"><div class="grid grid-cols-2 gap-4 border-b border-slate-100 pb-4"><div><label class="text-xs text-slate-500 block mb-1">居住情形</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-1.5 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.familyStatus.living', this)">${d.familyStatus?.living || '-'}</div></div><div><label class="text-xs text-slate-500 block mb-1">家庭關係</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-1.5 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.familyStatus.familyRel', this)">${d.familyStatus?.familyRel || '-'}</div></div><div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">緊急聯絡人資訊</label><div class="text-sm font-medium bg-purple-50 text-purple-900 border border-purple-100 rounded p-2 flex gap-2">姓名: <span class="editable-area px-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.emergencyContact.name', this)">${d.emergencyContact?.name || '-'}</span> / 關係: <span class="editable-area px-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.emergencyContact.relation', this)">${d.emergencyContact?.relation || '-'}</span> / 電話: <span class="editable-area px-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.emergencyContact.phone', this)">${d.emergencyContact?.phone || '-'}</span></div></div></div><div><label class="text-xs text-slate-500 block mb-1">家系圖與家庭狀況說明 (文字敘述)</label><div class="text-sm text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-200 editable-area min-h-[4rem]" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.familyStatus.description', this)">${d.familyStatus?.description || '無紀錄'}</div></div></div></div>
+            <div class="bg-white p-5 rounded-xl border border-purple-200 shadow-sm"><h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="file-check" class="w-5 h-5 text-purple-600"></i> 福利與保險身分</h3><div class="space-y-6"><div><label class="text-xs font-bold text-slate-700 block mb-2 border-b border-slate-100 pb-1">社會福利身分</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.welfare.status', this)">${Array.isArray(d.welfare?.status) ? d.welfare.status.join('、') : (d.welfare?.status || '無')}</div></div><div><label class="text-xs font-bold text-slate-700 block mb-2 border-b border-slate-100 pb-1">社會保險身分</label><div class="text-sm font-medium bg-slate-50 border border-slate-200 rounded p-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.welfare.insurance', this)">${Array.isArray(d.welfare?.insurance) ? d.welfare.insurance.join('、') : (d.welfare?.insurance || '無')}</div></div></div></div>
+          </div>
+          <div class="bg-white p-5 rounded-xl border border-purple-200 shadow-sm">
+             <h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><i data-lucide="pen-tool" class="w-5 h-5 text-purple-600"></i> 處遇內容與說明</h3>
+             <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-5"><div class="bg-white p-4 rounded-lg border border-purple-100 shadow-sm hover:border-purple-300 transition-colors"><div class="text-sm font-bold text-purple-800 flex items-center gap-1"><i data-lucide="check-square" class="w-4 h-4"></i> 福利諮詢</div>${renderCheckboxes(patient.id, WELFARE_OPTS, d.treatment?.welfareConsult, 'socialWorkData.treatment.welfareConsult', 'purple')}</div><div class="bg-white p-4 rounded-lg border border-purple-100 shadow-sm hover:border-purple-300 transition-colors"><div class="text-sm font-bold text-purple-800 flex items-center gap-1"><i data-lucide="check-square" class="w-4 h-4"></i> 情緒與疾病適應</div>${renderCheckboxes(patient.id, EMOTION_OPTS, d.treatment?.emotionAdapt, 'socialWorkData.treatment.emotionAdapt', 'purple')}</div><div class="bg-white p-4 rounded-lg border border-purple-100 shadow-sm hover:border-purple-300 transition-colors"><div class="text-sm font-bold text-purple-800 flex items-center gap-1"><i data-lucide="check-square" class="w-4 h-4"></i> 家庭問題</div>${renderCheckboxes(patient.id, FAMILY_OPTS, d.treatment?.familyProblem, 'socialWorkData.treatment.familyProblem', 'purple')}</div></div>
+            <div><label class="text-xs font-bold text-slate-700 block mb-2">處遇說明 (詳細文字敘述)</label><div class="text-base text-slate-800 bg-slate-50 p-4 rounded-lg border border-slate-200 editable-area min-h-[100px] leading-relaxed" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'socialWorkData.treatment.description', this)">${d.treatment?.description || '請輸入詳細處遇說明...'}</div></div>
+          </div>
+          ${renderTabMeta(patient.id, 'socialWorkData.meta', d.meta)}
+        </div>
+      `;
+    }
+
+    function renderPsychologist(patient) {
+      const d = patient.psychData || {};
+      const bsrsTotal = (d.bsrs || []).slice(0, 5).reduce((a, b) => a + Number(b), 0);
+      const suicideScore = Number(d.bsrs?.[5] || 0);
+      const isiTotal = (d.isi || []).reduce((a, b) => a + Number(b), 0);
+      
+      let bsrsStatus = "身心良好"; let bsrsColor = "text-green-600 bg-green-50 border-green-200";
+      if (bsrsTotal >= 15) { bsrsStatus = "重度困擾 (建議轉介)"; bsrsColor = "text-red-600 bg-red-50 border-red-200"; }
+      else if (bsrsTotal >= 10) { bsrsStatus = "中度困擾 (建議諮商)"; bsrsColor = "text-orange-600 bg-orange-50 border-orange-200"; }
+      else if (bsrsTotal >= 6) { bsrsStatus = "輕度困擾 (尋求支持)"; bsrsColor = "text-yellow-600 bg-yellow-50 border-yellow-200"; }
+      if (suicideScore >= 2) { bsrsStatus = "需高度關懷 (有自殺意念)"; bsrsColor = "text-red-600 bg-red-50 border-red-200"; }
+
+      let isiStatus = "無明顯失眠困擾"; let isiColor = "text-green-600 bg-green-50 border-green-200";
+      if (isiTotal >= 22) { isiStatus = "有嚴重失眠困擾 (建議就診)"; isiColor = "text-red-600 bg-red-50 border-red-200"; }
+      else if (isiTotal >= 15) { isiStatus = "有明顯失眠困擾 (建議就診)"; isiColor = "text-orange-600 bg-orange-50 border-orange-200"; }
+      else if (isiTotal >= 8) { isiStatus = "稍有睡眠困擾 (持續追蹤)"; isiColor = "text-yellow-600 bg-yellow-50 border-yellow-200"; }
+
+      let recordsHtml = (d.records || []).map((r, index) => `
+        <div class="p-4 border border-slate-200 bg-white rounded-xl flex gap-4 shadow-sm relative group hover:border-pink-300 transition-colors">
+          <button onclick="deleteRecordItem('psychData.records', ${index})" class="absolute top-2 right-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+          <div class="text-center min-w-[90px] pr-4 border-r border-slate-100"><div class="text-sm font-bold text-slate-700 editable-area px-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'psychData.records.${index}.date', this)">${r.date}</div><div class="text-xs text-slate-500 mt-1 editable-area px-1 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'psychData.records.${index}.time', this)">${r.time}</div><div class="text-[10px] text-slate-400 mt-2"><i data-lucide="pen-tool" class="w-3 h-3 inline mr-1"></i>${r.recorder}</div></div>
+          <div class="flex-1 pl-2"><span class="inline-block px-2 py-1 bg-pink-100 text-pink-800 text-xs font-bold rounded mb-2 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'psychData.records.${index}.project', this)">${r.project}</span><div class="text-sm text-slate-700 leading-relaxed editable-area p-1 min-h-[3rem] border border-transparent hover:border-slate-200 rounded" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'psychData.records.${index}.content', this)">${r.content}</div></div>
+        </div>
+      `).join('');
+
+      return `
+        <div class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-white p-5 rounded-xl border border-pink-200 shadow-sm flex flex-col"><div class="flex justify-between items-start mb-4"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="brain" class="w-5 h-5 text-pink-600"></i> BSRS-5 簡式健康量表</h3><div class="text-right"><div class="text-3xl font-black text-slate-800 leading-none">${bsrsTotal} <span class="text-sm font-normal text-slate-500">分</span></div><div class="text-xs font-bold mt-1 px-2 py-0.5 rounded border ${bsrsColor}">${bsrsStatus}</div></div></div><div class="space-y-2 mt-auto"><div class="flex justify-between text-xs text-slate-400 border-b border-slate-100 pb-1 px-1"><span>評估項目 (近一週)</span><span>分數 (0-4)</span></div>${BSRS_QUESTIONS.map((q, idx) => `<div class="flex justify-between items-center text-sm border-b border-slate-50 pb-2 pt-1 hover:bg-slate-50 px-1 rounded transition-colors"><span class="${idx===5 ? 'text-red-600 font-bold' : 'text-slate-700'}">${idx+1}. ${q}</span><div class="font-bold text-slate-800 w-8 text-center bg-slate-100 rounded border border-slate-200 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'psychData.bsrs.${idx}', this)">${d.bsrs?.[idx] || 0}</div></div>`).join('')}<div class="text-[10px] text-slate-400 mt-2 text-right">0:完全不會, 1:輕微, 2:中等, 3:嚴重, 4:非常嚴重</div></div></div>
+            <div class="bg-white p-5 rounded-xl border border-pink-200 shadow-sm flex flex-col"><div class="flex justify-between items-start mb-4"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="moon" class="w-5 h-5 text-pink-600"></i> ISI 失眠嚴重度量表</h3><div class="text-right"><div class="text-3xl font-black text-slate-800 leading-none">${isiTotal} <span class="text-sm font-normal text-slate-500">分</span></div><div class="text-xs font-bold mt-1 px-2 py-0.5 rounded border ${isiColor}">${isiStatus}</div></div></div><div class="space-y-2 mt-auto"><div class="flex justify-between text-xs text-slate-400 border-b border-slate-100 pb-1 px-1"><span>評估項目 (近兩週)</span><span>分數 (0-4)</span></div>${ISI_QUESTIONS.map((q, idx) => `<div class="flex justify-between items-center text-sm border-b border-slate-50 pb-2 pt-1 hover:bg-slate-50 px-1 rounded transition-colors"><span class="text-slate-700">${idx+1}. ${q}</span><div class="font-bold text-slate-800 w-8 text-center bg-slate-100 rounded border border-slate-200 editable-area" contenteditable="true" onblur="handleContentUpdate('${patient.id}', 'psychData.isi.${idx}', this)">${d.isi?.[idx] || 0}</div></div>`).join('')}</div></div>
+          </div>
+          <div class="bg-white p-5 rounded-xl border border-pink-200 shadow-sm"><div class="flex justify-between items-center mb-5"><h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i data-lucide="file-text" class="w-5 h-5 text-pink-600"></i> 照護會談紀錄</h3><button onclick="addNewRecord('psychRecord')" class="text-sm bg-pink-50 text-pink-700 hover:bg-pink-100 px-3 py-1.5 rounded-lg flex items-center gap-1 font-medium transition-colors border border-pink-200"><i data-lucide="plus" class="w-4 h-4"></i> 新增紀錄</button></div><div class="space-y-4">${recordsHtml.length > 0 ? recordsHtml : '<div class="text-center text-slate-400 py-6 text-sm bg-slate-50 rounded-lg">尚無會談紀錄</div>'}</div></div>
+          ${renderTabMeta(patient.id, 'psychData.meta', d.meta)}
+        </div>
+      `;
+    }
+
+    // 啟討 Firebase 與應用
+    initSystem();
+  </script>
+</body>
+</html>
